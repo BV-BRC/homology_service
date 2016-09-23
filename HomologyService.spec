@@ -102,6 +102,8 @@ module HomologyService
 	string genome_name;
 	string genome_id;
 	string md5;
+	string locus_tag;
+	string alt_locus_tag;
 	int match_count;
     } FeatureMetadata;
 

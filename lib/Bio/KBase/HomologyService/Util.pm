@@ -45,7 +45,7 @@ sub find_genome_db
     my $check;
     if ($db_type =~ /^a/i)
     {
-	$file = "$base.faa";
+	$file = "$base.PATRIC.faa";
 	$check = "$file.pin";
     }
     elsif ($db_type =~ /^d/i && $type =~ /^c/i)
@@ -55,7 +55,7 @@ sub find_genome_db
     }
     elsif ($db_type =~ /^d/i && $type =~ /^f/i)
     {
-	$file = "$base.ffn";
+	$file = "$base.PATRIC.ffn";
 	$check = "$file.nin";
     }
     else
@@ -98,13 +98,13 @@ sub build_alias_database
     }
     my $build_db;
     print STDERR Dumper(\@db_files);
-    my $db_file = File::Temp->new(UNLINK => 1);
+    my $db_file = File::Temp->new(UNLINK => 0);
     close($db_file);
     $build_db = ["blastdb_aliastool",
 		 "-dblist", join(" ", @db_files),
 		 "-title", join(" ", @$subj_genomes),
 		 "-dbtype", (($subj_db_type =~ /^a/i) ? 'prot' : 'nucl'),
-			 "-out", $db_file];
+			 "-out", "$db_file"];
     my $ok = run($build_db);
     $ok or die "Error running database build @$build_db\n";
     print STDERR "Built db $db_file\n";
@@ -177,6 +177,7 @@ sub blast_fasta_to_genomes
     my $err;
 
     my $bench = Bio::KBase::HomologyService::Bench->new();
+    print STDERR "cmd=@cmd\n";
     my $ok = run(\@cmd, "<", \$fasta_data, ">", \$json, "2>", \$err);
     $bench->finish();
 
@@ -230,7 +231,39 @@ sub blast_fasta_to_genomes
 		my $md;
 		if ($desc->{id} =~ /^gnl\|BL_ORD/)
 		{
-		    if ($desc->{title} =~ /^(\S+)\s+(.*)\s{3}\[(.*?)(\s*\|\s*(\S+))?\]\s*$/)
+		    if ($desc->{title} =~ /^(\S+)\s{3}(.*)\s{3}(.*)$/)
+		    {
+			my $id = $1;
+			my $fun = $2;
+			my $ginfo = $3;
+			$id =~ s/^((fig\|\d+\.\d+.[^.]+\.\d+)|(accn\|[^|]+))//;
+			my $fid = $1;
+			print "id=$id\n";
+			$id =~ s/^\|//;
+			$id =~ s/\|$//;
+			my @rest = split(/\|/, $id);
+			my $locus;
+			my $alt;
+			if (@rest == 2)
+			{
+			    ($locus, $alt) = @rest;
+			    $md->{locus_tag} = $locus;
+			    $md->{alt_locus_tag} = $alt;
+			}
+			elsif (@rest == 1)
+			{
+			    $alt = $rest[0];
+			    $md->{alt_locus_tag} = $alt;
+			}
+			if ($ginfo =~ /^\[(.*) \| (\d+\.\d+)/)
+			{
+			    $md->{genome_name} = $1;
+			    $md->{genome_id} = $2;
+			}
+			$desc->{id} = $fid;
+			$md->{function} = $fun;
+		    }
+		    elsif ($desc->{title} =~ /^(\S+)\s+(.*)\s{3}\[(.*?)(\s*\|\s*(\S+))?\]\s*$/)
 		    {
 			$desc->{id} = $1;
 			$md->{function} = $2;

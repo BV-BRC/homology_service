@@ -9,8 +9,9 @@ SERVER_SPEC = HomologyService.spec
 # This layout is specfic to the current (January 2016) layout of 
 # the NCBI BLAST distribution.
 #
-BLAST_BASE = ncbi-blast-2.3.0+
-BLAST_FTP_SRC = ftp://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/LATEST/$(BLAST_BASE)-x64-linux.tar.gz
+BLAST_VERSION = 2.3.0
+BLAST_BASE = ncbi-blast-$(BLAST_VERSION)+
+BLAST_FTP_SRC = ftp://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/$(BLAST_VERSION)/$(BLAST_BASE)-x64-linux.tar.gz
 BLAST_FTP_FILE = $(notdir $(BLAST_FTP_SRC))
 BLAST_DEPLOY_DIR = $(TARGET)/services/$(SERVICE)/bin
 
@@ -112,7 +113,9 @@ deploy-service-scripts:
 	        $(WRAP_PERL_SCRIPT) "$(TARGET)/plbin/$$basefile" $(TARGET)/services/$(SERVICE)/bin/$$base ; \
 	done
 
-deploy-blast:
+deploy-blast: $(BLAST_DEPLOY_DIR)/blastp
+
+$(BLAST_DEPLOY_DIR)/blastp:
 	if [ ! -s $(BLAST_FTP_FILE) ] ; then \
 		curl --fail -o $(BLAST_FTP_FILE) $(BLAST_FTP_SRC);  \
 	fi

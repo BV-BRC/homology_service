@@ -55,8 +55,8 @@ sub new
 	$self->{_blast_program_prefix} = "$svcdir/bin/";
     }
     
-    $self->{_blast_program_suffix} = $cfg->setting('blast-program-suffix');
-    $self->{_blast_program_prefix} = $cfg->setting('blast-program-prefix');
+    $self->{_blast_program_suffix} = $cfg->setting('blast-program-suffix') if $cfg->setting('blast-program-suffix');
+    $self->{_blast_program_prefix} = $cfg->setting('blast-program-prefix') if $cfg->setting('blast-program-prefix');
 
     my $util = Bio::KBase::HomologyService::Util->new($self);
     $self->{_util} = $util;
@@ -175,6 +175,8 @@ FeatureMetadata is a reference to a hash where the following keys are defined:
 	genome_name has a value which is a string
 	genome_id has a value which is a string
 	md5 has a value which is a string
+	locus_tag has a value which is a string
+	alt_locus_tag has a value which is a string
 	match_count has a value which is an int
 
 </pre>
@@ -273,6 +275,8 @@ FeatureMetadata is a reference to a hash where the following keys are defined:
 	genome_name has a value which is a string
 	genome_id has a value which is a string
 	md5 has a value which is a string
+	locus_tag has a value which is a string
+	alt_locus_tag has a value which is a string
 	match_count has a value which is an int
 
 
@@ -498,6 +502,8 @@ FeatureMetadata is a reference to a hash where the following keys are defined:
 	genome_name has a value which is a string
 	genome_id has a value which is a string
 	md5 has a value which is a string
+	locus_tag has a value which is a string
+	alt_locus_tag has a value which is a string
 	match_count has a value which is an int
 
 </pre>
@@ -597,6 +603,8 @@ FeatureMetadata is a reference to a hash where the following keys are defined:
 	genome_name has a value which is a string
 	genome_id has a value which is a string
 	md5 has a value which is a string
+	locus_tag has a value which is a string
+	alt_locus_tag has a value which is a string
 	match_count has a value which is an int
 
 
@@ -1049,6 +1057,8 @@ function has a value which is a string
 genome_name has a value which is a string
 genome_id has a value which is a string
 md5 has a value which is a string
+locus_tag has a value which is a string
+alt_locus_tag has a value which is a string
 match_count has a value which is an int
 
 </pre>
@@ -1062,6 +1072,8 @@ function has a value which is a string
 genome_name has a value which is a string
 genome_id has a value which is a string
 md5 has a value which is a string
+locus_tag has a value which is a string
+alt_locus_tag has a value which is a string
 match_count has a value which is an int
 
 
