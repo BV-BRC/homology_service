@@ -126,6 +126,18 @@ module HomologyService
 				   float min_coverage)
 	returns(list<Report> reports, mapping<string, FeatureMetadata> metadata);
 
+    funcdef blast_fasta_to_taxon(string fasta_data,
+				   string program,
+				   string taxon_id,
+				   /* subject_type is "contigs" or "features" */
+				   string subject_type,
+				   /* Post demo we will slot this in here.
+				      BlastParameters blast_parameters */
+				   float evalue_cutoff,
+				   int max_hits,
+				   float min_coverage)
+	returns(list<Report> reports, mapping<string, FeatureMetadata> metadata);
+
     typedef structure
     {
 	string name;

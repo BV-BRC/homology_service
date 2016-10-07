@@ -10,6 +10,7 @@ use base 'Class::Accessor';
 use IPC::Run 'run';
 use JSON::XS;
 use DB_File;
+use LWP::UserAgent;
 
 __PACKAGE__->mk_accessors(qw(blast_db_genomes impl json));
 
@@ -62,7 +63,6 @@ sub find_genome_db
     {
 	die "find_genome_db: Invalid combination of db_type=$db_type and type=$type";
     }
-
 
     if (! -f $check)
     {
@@ -150,6 +150,59 @@ sub construct_blast_command
     }
 
     return @cmd;
+}
+
+sub blast_fasta_to_taxon
+{
+    my ($self, $fasta_data, $program, $taxon_id, $subj_type, $evalue_cutoff, $max_hits, $min_coverage) = @_;
+
+    #
+    # Query the data API to determine the set of genomes that derive from taxon_id.
+    #
+
+    $taxon_id =~ /(\d+)/ or die "Invalid taxon ID";
+    $taxon_id = $1;
+    my $ua = LWP::UserAgent->new;
+    my $res = $ua->post("https://www.patricbrc.org/api/genome",
+		        {
+			    fl => 'genome_id,genome_name',
+			    q => "taxon_lineage_ids:$taxon_id",
+			    start => 0,
+			    rows => 1000
+			},
+			"Content-type" => "application/solrquery+x-www-form-urlencoded",
+			"Accept", "application/solr+json");
+    die "failure retrieving taxon data: " . $res->status_line . "\n" . $res->content if !$res->is_success;
+    my $doc;
+    eval { $doc = decode_json($res->content); };
+    $doc or die "could not decode taxon data: $@";
+
+    my $subj_db_type = $blast_command_subject_type{$program};
+    
+    my @genomes;
+    for my $g (@{$doc->{response}->{docs}})
+    {
+	my $gid = $g->{genome_id};
+	my $gname = $g->{genome_name};
+
+	#
+	# Try to find the db file and emit a warning if it is missing.
+	#
+	eval {
+	    my $d = $self->find_genome_db($gid, $subj_db_type, $subj_type);
+	    print "Found $d for $gid $gname\n";
+	    push(@genomes, $gid);
+	};
+	if ($@)
+	{
+	    print STDERR "No blast database found for $gid $gname\n";
+	    print STDERR $@;
+	}
+    }
+
+    die "No blast databases found for $taxon_id" if @genomes == 0;
+
+    return $self->blast_fasta_to_genomes($fasta_data, $program, \@genomes, $subj_type, $evalue_cutoff, $max_hits, $min_coverage);
 }
 
 sub blast_fasta_to_genomes
