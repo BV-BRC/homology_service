@@ -289,19 +289,19 @@ sub build_alias_database
 					 ['in', 'genome_id', "($glist)"],
 					 ['select', 'genome_id', 'public', 'owner']);
 
-	print STDERR Dumper($glist, \@res);
+	# print STDERR Dumper($glist, \@res);
 	for my $ent (@res)
 	{
 	    push(@{$ent->{public} ? $public : $private}, [$ent->{genome_id}, $ent->{owner}]);
 	}
     }
-    print STDERR Dumper($public, $private);
+    # print STDERR Dumper($public, $private);
 
     my @public_files = map { $self->find_genome_db($_->[0], $subj_db_type, $subj_type) } @$public;
     my @private_files = map { $self->find_private_genome_db($_->[0], $_->[1], $subj_db_type, $subj_type) } @$private;
 
     my @db_files = (@public_files, @private_files);
-    print STDERR Dumper(\@public_files, \@private_files);
+    # print STDERR Dumper(\@public_files, \@private_files);
     
     if (@db_files == 1)
     {
@@ -461,8 +461,8 @@ sub blast_fasta_to_genomes
 
     my $is_short = $self->test_for_short_query($fasta_data);
 
-    print STDERR "query data len=" . length($fasta_data) . "is_short=$is_short\n";
-    print STDERR "!$fasta_data!\n";
+    # print STDERR "query data len=" . length($fasta_data) . "is_short=$is_short\n";
+    # print STDERR "!$fasta_data!\n";
     
     my @cmd = $self->construct_blast_command($program, $evalue_cutoff, $max_hits, $min_coverage, $is_short);
 
@@ -507,6 +507,20 @@ sub blast_fasta_to_genomes
 	    print STDERR $logstr, "\n";
 	}
 	    
+    }
+
+    #
+    # If we created a tempfile, flush it and the created database files.
+    #
+    if (ref($db_file) eq 'File::Temp')
+    {
+	my @tmps = <$db_file.*>;
+	push(@tmps, $db_file);
+	my $n = unlink(@tmps);
+	if (!$n || $n != @tmps)
+	{
+	    warn "Unlink @tmps failed ($n $!)\n";
+	}
     }
 
     if (!$ok)
