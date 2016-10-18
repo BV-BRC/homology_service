@@ -19,6 +19,7 @@ HomologyService
 
 use Bio::KBase::HomologyService::Util;
 use Bio::KBase::DeploymentConfig;
+use P3DataAPI;
 
 #END_HEADER
 
@@ -34,6 +35,9 @@ sub new
 
     $self->{_blast_db_genomes} = $cfg->setting('blast-db-genomes');
     $self->{_blast_db_databases} = $cfg->setting('blast-db-databases');
+
+    $self->{_data_api} = P3DataAPI->new();
+    delete $self->{data_api}->{token};
 
     my $thr = $cfg->setting('blast-threads');
     if ($thr =~ /^\s*(\d+)\s*$/)
@@ -315,6 +319,12 @@ sub blast_fasta_to_genomes
     my($reports, $metadata);
     #BEGIN blast_fasta_to_genomes
 
+    #
+    # If we have a token, temporarily override the token in our P3DataAPI instance.
+    #
+    
+    local $self->{_data_api}->{token} = $ctx->token;
+    
     ($reports, $metadata) = $self->{_util}->blast_fasta_to_genomes($fasta_data, $program, $genomes, $subject_type, $evalue_cutoff, $max_hits, $min_coverage);
     
     #END blast_fasta_to_genomes

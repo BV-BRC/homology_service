@@ -37,40 +37,92 @@ sub new
     return bless $self, $class;
 }
 
-sub find_genome_db
+sub data_api
+{
+    my($self) = @_;
+    return $self->{impl}->{_data_api};
+}
+
+sub compute_db_filename
 {
     my($self, $genome, $db_type, $type) = @_;
 
-    my $base = $self->blast_db_genomes . "/$genome";
-    my $file;
-    my $check;
+    my @candidates;
     if ($db_type =~ /^a/i)
     {
-	$file = "$base.PATRIC.faa";
-	$check = "$file.pin";
+	push(@candidates,
+	     ["PATRIC.faa", "PATRIC.faa.pin"],
+	     ["RefSeq.faa", "RefSeq.faa.pin"]);
     }
     elsif ($db_type =~ /^d/i && $type =~ /^c/i)
     {
-	$file = "$base.fna";
-	$check = "$file.nin";
+	push(@candidates,
+	     ["fna", "fna.nin"]);
     }
     elsif ($db_type =~ /^d/i && $type =~ /^f/i)
     {
-	$file = "$base.PATRIC.ffn";
-	$check = "$file.nin";
+	push(@candidates,
+	     ["PATRIC.ffn", "PATRIC.ffn.nin"],
+	     ["RefSeq.ffn", "RefSeq.ffn.nin"],
+	     ["PATRIC.frn", "PATRIC.frn.nin"],
+	     ["RefSeq.frn", "RefSeq.frn.nin"]);
     }
     else
     {
 	die "find_genome_db: Invalid combination of db_type=$db_type and type=$type";
     }
 
+    return @candidates;
+}
+
+sub find_genome_db
+{
+    my($self, $genome, $db_type, $type) = @_;
+
+    my $base = $self->blast_db_genomes . "/$genome";
+
+    my @candidates = $self->compute_db_filename($genome, $db_type, $type);
+
+    my @paths;
+    for my $cand (@candidates)
+    {
+	my($file, $check) = @$cand;
+	my $path = "$base.$file";
+	my $check_path = "$base.$check";
+	if (-f $check_path)
+	{
+	    push(@paths, $path);
+	}
+    }
+    return @paths;
+}
+
+sub find_private_genome_db
+{
+    my($self, $genome, $owner, $db_type, $type) = @_;
+
+    my $base = $self->blast_db_private_genomes . "$owner/$genome";
+
+    return ();
+    
+    my($file, $check) = $self->compute_db_filename($genome, $db_type, $type);
+
     if (! -f $check)
     {
-	die "find_genome_db: Could not find index file $check";
+	$self->create_private_genome_db($genome, $owner, $db_type, $type, $base, $file);
     }
 
     return $file;
 }
+
+
+sub create_private_genome_db
+{
+    my($self, $genome, $owner, $db_type, $type, $base, $file) = @_;
+
+    
+}
+
 
 #
 # Build a blast alias database and return a File::Temp referring to it.
@@ -85,17 +137,35 @@ sub build_alias_database
     {
 	return;
     }
-    elsif (@$subj_genomes == 1)
+
+    #
+    # We partition the genome list into private and public sets.
+    #
+
+    my $glist = join(",", @$subj_genomes);
+    
+    my @res = $self->data_api->query('genome',
+				     ['in', 'genome_id', "($glist)"],
+				     ['select', 'genome_id', 'public', 'owner']);
+
+    my $public = [];
+    my $private = [];
+    for my $ent (@res)
     {
-	return $self->find_genome_db($subj_genomes->[0], $subj_db_type, $subj_type);
+	push(@{$ent->{public} ? $public : $private}, [$ent->{genome_id}, $ent->{owner}]);
+    }
+    print Dumper($public, $private);
+
+    my @public_files = map { $self->find_genome_db($_->[0], $subj_db_type, $subj_type) } @$public;
+    my @private_files = map { $self->find_private_genome_db($_->[0], $_->[1], $subj_db_type, $subj_type) } @$private;
+
+    my @db_files = (@public_files, @private_files);
+    
+    if (@db_files == 1)
+    {
+	return $db_files[0];
     }
 
-    my @db_files;
-    for my $g (@$subj_genomes)
-    {
-	my $f = $self->find_genome_db($g, $subj_db_type, $subj_type);
-	push(@db_files, $f);
-    }
     my $build_db;
     print STDERR Dumper(\@db_files);
     my $db_file = File::Temp->new(UNLINK => 0);
@@ -113,7 +183,7 @@ sub build_alias_database
 
 sub construct_blast_command
 {
-    my($self, $program, $evalue_cutoff, $max_hits, $min_coverage) = @_;
+    my($self, $program, $evalue_cutoff, $max_hits, $min_coverage, $is_short) = @_;
 
     my $exe = $blast_command_exe_name{$program};
 
@@ -149,6 +219,18 @@ sub construct_blast_command
 	push(@cmd, "-num_threads", $self->impl->{_blast_threads});
     }
 
+    #
+    # if we have hsort sequences, use the tasks optimized for that.
+    #
+    if ($program eq 'blastn' && $is_short)
+    {
+	push(@cmd, "-task", "blastn-short");
+    }
+    elsif ($program eq 'blastp' && $is_short)
+    {
+	push(@cmd, "-task", "blastp-short");
+    }
+       
     return @cmd;
 }
 
@@ -209,7 +291,12 @@ sub blast_fasta_to_genomes
 {
     my ($self, $fasta_data, $program, $genomes, $subj_type, $evalue_cutoff, $max_hits, $min_coverage) = @_;
 
-    my @cmd = $self->construct_blast_command($program, $evalue_cutoff, $max_hits, $min_coverage);
+    my $is_short = $self->test_for_short_query($fasta_data);
+
+    print STDERR "query data len=" . length($fasta_data) . "is_short=$is_short\n";
+    print STDERR "!$fasta_data!\n";
+    
+    my @cmd = $self->construct_blast_command($program, $evalue_cutoff, $max_hits, $min_coverage, $is_short);
 
     my $subj_db_type = $blast_command_subject_type{$program};
 
@@ -281,79 +368,89 @@ sub blast_fasta_to_genomes
 	{
 	    for my $desc (@{$res->{description}})
 	    {
-		my $md;
-		if ($desc->{id} =~ /^gnl\|BL_ORD/)
-		{
-		    if ($desc->{title} =~ /^(\S+)\s{3}(.*)\s{3}(.*)$/)
-		    {
-			my $id = $1;
-			my $fun = $2;
-			my $ginfo = $3;
-			$id =~ s/^((fig\|\d+\.\d+.[^.]+\.\d+)|(accn\|[^|]+))//;
-			my $fid = $1;
-			print "id=$id\n";
-			$id =~ s/^\|//;
-			$id =~ s/\|$//;
-			my @rest = split(/\|/, $id);
-			my $locus;
-			my $alt;
-			if (@rest == 2)
-			{
-			    ($locus, $alt) = @rest;
-			    $md->{locus_tag} = $locus;
-			    $md->{alt_locus_tag} = $alt;
-			}
-			elsif (@rest == 1)
-			{
-			    $alt = $rest[0];
-			    $md->{alt_locus_tag} = $alt;
-			}
-			if ($ginfo =~ /^\[(.*) \| (\d+\.\d+)/)
-			{
-			    $md->{genome_name} = $1;
-			    $md->{genome_id} = $2;
-			}
-			$desc->{id} = $fid;
-			$md->{function} = $fun;
-		    }
-		    elsif ($desc->{title} =~ /^(\S+)\s+(.*)\s{3}\[(.*?)(\s*\|\s*(\S+))?\]\s*$/)
-		    {
-			$desc->{id} = $1;
-			$md->{function} = $2;
-			$md->{genome_name} = $3;
-			$md->{genome_id} = $5 if $5;
-		    }
-		    elsif ($desc->{title} =~ /^(\S+)\s+\[(.*?)(\s*\|\s*(\S+))?\]\s*$/)
-		    {
-			$desc->{id} = $1;
-			$md->{genome_name} = $2;
-			$md->{genome_id} = $4 if $4;
-		    }
-		}
-		else
-		{
-		    $desc->{id} =~ s/^gnl\|//;
-		    if ($desc->{title} =~ /^\s*(.*)\s{3}\[(.*?)(\s*\|\s*(\S+))?\]\s*$/)
-		    {
-			$md->{function} = $1;
-			$md->{genome_name} = $2;
-			$md->{genome_id} = $4 if $4;
-		    }
-		    elsif ($desc->{title} =~ /^\s*\[(.*?)(\s*\|\s*(\S+))?\]\s*$/)
-		    {
-			$md->{genome_name} = $1;
-			$md->{genome_id} = $3 if $3;
-		    }
-		}
-		if ($desc->{id} =~ /^(kb\|g\.\d+)/)
-		{
-		    $md->{genome_id} = $1;
-		}
+		my $md = $self->decode_title($desc);
+		
 		$metadata->{$desc->{id}} = $md if $md;
 	    }
 	}
     }
     return($doc, $metadata);
+}
+
+sub decode_title
+{
+    my($self, $desc) = @_;
+	
+    my $md;
+    
+    if ($desc->{id} =~ /^gnl\|BL_ORD/)
+    {
+	if ($desc->{title} =~ /^(\S+)\s{3}(.*)\s{3}(.*)$/)
+	{
+	    my $id = $1;
+	    my $fun = $2;
+	    my $ginfo = $3;
+	    $id =~ s/^((fig\|\d+\.\d+.[^.]+\.\d+)|(accn\|[^|]+))//;
+	    my $fid = $1;
+	    print "id=$id\n";
+	    $id =~ s/^\|//;
+	    $id =~ s/\|$//;
+	    my @rest = split(/\|/, $id);
+	    my $locus;
+	    my $alt;
+	    if (@rest == 2)
+	    {
+		($locus, $alt) = @rest;
+		$md->{locus_tag} = $locus;
+		$md->{alt_locus_tag} = $alt;
+	    }
+	    elsif (@rest == 1)
+	    {
+		$alt = $rest[0];
+		$md->{alt_locus_tag} = $alt;
+	    }
+	    if ($ginfo =~ /^\[(.*) \| (\d+\.\d+)/)
+	    {
+		$md->{genome_name} = $1;
+		$md->{genome_id} = $2;
+	    }
+	    $desc->{id} = $fid;
+	    $md->{function} = $fun;
+	}
+	elsif ($desc->{title} =~ /^(\S+)\s+(.*)\s{3}\[(.*?)(\s*\|\s*(\S+))?\]\s*$/)
+	{
+	    $desc->{id} = $1;
+	    $md->{function} = $2;
+	    $md->{genome_name} = $3;
+	    $md->{genome_id} = $5 if $5;
+	}
+	elsif ($desc->{title} =~ /^(\S+)\s+\[(.*?)(\s*\|\s*(\S+))?\]\s*$/)
+	{
+	    $desc->{id} = $1;
+	    $md->{genome_name} = $2;
+	    $md->{genome_id} = $4 if $4;
+	}
+    }
+    else
+    {
+	$desc->{id} =~ s/^gnl\|//;
+	if ($desc->{title} =~ /^\s*(.*)\s{3}\[(.*?)(\s*\|\s*(\S+))?\]\s*$/)
+	{
+	    $md->{function} = $1;
+	    $md->{genome_name} = $2;
+	    $md->{genome_id} = $4 if $4;
+	}
+	elsif ($desc->{title} =~ /^\s*\[(.*?)(\s*\|\s*(\S+))?\]\s*$/)
+	{
+	    $md->{genome_name} = $1;
+	    $md->{genome_id} = $3 if $3;
+	}
+    }
+    if ($desc->{id} =~ /^(kb\|g\.\d+)/)
+    {
+	$md->{genome_id} = $1;
+    }
+    return $md;
 }
 
 sub enumerate_databases
@@ -362,14 +459,19 @@ sub enumerate_databases
 
     my $dir = $self->impl->{_blast_db_databases};
 
-    my %typemap = ('.faa' => 'protein', '.ffn' => 'dna');
+    my %typemap = ('.faa' => 'protein',
+		   '.ffn' => 'dna',
+		   '.faa.pal' => 'protein',
+		   '.ffn.nal' => 'dna',
+		   '.fna.nal' => 'dna',
+		  );
 
     my $res = [];
     
-    for my $db (<$dir/*.{faa,ffn}>)
+    for my $db (<$dir/*.{faa,ffn,faa.pal,ffn.nal,fna.nal}>)
     {
 	my $key = basename($db);
-	my($name, $path, $suffix) = fileparse($db, '.faa', '.ffn');
+	my($name, $path, $suffix) = fileparse($db, qw(.faa .ffn .faa.pal  .ffn.nal .fna.nal));
 
 	my $descr = {
 	    name => $name,
@@ -379,6 +481,7 @@ sub enumerate_databases
 	};
 	push(@$res, $descr);
     }
+
     return $res;
 }
 
@@ -386,14 +489,21 @@ sub blast_fasta_to_database
 {
     my($self, $fasta_data, $program, $database_key, $evalue_cutoff, $max_hits, $min_coverage) = @_;
 
-    my @cmd = $self->construct_blast_command($program, $evalue_cutoff, $max_hits, $min_coverage);
+    my $is_short = $self->test_for_short_query($fasta_data);
+
+    my @cmd = $self->construct_blast_command($program, $evalue_cutoff, $max_hits, $min_coverage, $is_short);
     if (!@cmd)
     {
 	die "blast_fasta_to_database: Couldn't find blast program $program";
     }
 
+    #
+    # Sanity check.
+    #
+    $database_key = basename($database_key);
+
     my $db_file = $self->impl->{_blast_db_databases} . "/" . $database_key;
-    -f $db_file or die "Couldn't find db file $db_file\n";
+    -f $db_file or warn "Couldn't find db file $db_file\n";
 
     my $map_file = $self->impl->{_blast_db_databases} . "/" . $database_key . ".map.btree";
     my %map;
@@ -434,7 +544,6 @@ sub blast_fasta_to_database
 	    
     }
 
-
     if (!$ok)
     {
 	die "Blast failed @cmd: $err";
@@ -463,69 +572,35 @@ sub blast_fasta_to_database
 	{
 	    for my $desc (@{$res->{description}})
 	    {
-		my $md;
-
-		#
-		# We expect to get our form of the title since we're processing one of our MD5 NR databases.
-		#
-
-		# "title": "md5|b4dd51958f3c7a7a21e0f222dcbbd764|kb|g.1053.peg.3023   Threonine synthase (EC 4.2.3.1)   [Escherichia coli 101-1]   (1067 matches)"
-
-		if ($desc->{title} =~ /^md5\|([a-z0-9]{32})\|((kb\|g\.\d+)\S+)\s{3}(.*)\s{3}\[(.*?)\]\s{3}\((\d+)\s+matches/)
-		{
-		    my $md5 = $1;
-		    my $rep = $2;
-		    my $rep_genome_id = $3;
-		    my $rep_fn = $4;
-		    my $rep_genome = $5;
-		    my $matches = $6;
-
-		    $desc->{id} = $rep;
-
-		    $md->{function} = $rep_fn;
-		    $md->{genome_name} = $rep_genome;
-		    $md->{genome_id} = $rep_genome_id;
-		    $md->{md5} = $md5;
-		    $md->{match_count} = 0 + $matches;
-
-		    $metadata->{$desc->{id}} = $md if $md;
-
-		    my $identical = $map{$md5};
-		    my @iden = split(/$;/, $identical);
-		    for my $one (@iden)
-		    {
-			my($xid, $xfunc, $xgenome) = split(/\t/, $one);
-			next if $xid eq $desc->{id};
-			my($xgn) = $xid =~ /^(kb\|g\.\d+)/;
-			push(@{$identical_proteins->{$desc->{id}}}, [$xid, {
-			    function => $xfunc,
-			    genome_name => $xgenome,
-			    genome_id => $xgn,
-			}]);
-		    }
-		}
-		#
-		# Contigs database
-		#
-		# >kb|g.0.c.1   [Escherichia coli K12]
-		#
-		elsif ($desc->{title} =~ /^((kb\|g\.\d+)\S+)\s+\[(.*)\]/)
-		{
-		    my $contig = $1;
-		    my $gid = $2;
-		    my $gname = $3;
-
-		    $desc->{id} = $contig;
-
-		    $md->{genome_name} = $gname;
-		    $md->{genome_id} = $gid;
-
-		    $metadata->{$desc->{id}} = $md if $md;
-		}
+		my $md = $self->decode_title($desc);
+		$metadata->{$desc->{id}} = $md if $md;
 	    }
 	}
     }
     return($doc, $metadata, $identical_proteins);
 }
 
+sub test_for_short_query
+{
+    my($self, $fasta_data) = @_;
+    my $thresh = 30;
 
+    my $cur;
+
+    while ($fasta_data =~ /^(.*)/mg)
+    {
+        my $l = $1;
+	    
+        if ($l =~ /^>/)
+        {
+	    return 0 if $cur > $thresh;
+            $cur = 0;
+        }
+        else
+        {
+            $cur += ($l =~ tr/[a-z][A-Z]//);
+        }
+    }
+    return $cur > $thresh ? 0 : 1;
+    
+}
