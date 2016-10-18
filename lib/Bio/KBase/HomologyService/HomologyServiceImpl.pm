@@ -17,6 +17,7 @@ HomologyService
 
 #BEGIN_HEADER
 
+use Data::Dumper;
 use Bio::KBase::HomologyService::Util;
 use Bio::KBase::DeploymentConfig;
 use P3DataAPI;
@@ -325,6 +326,7 @@ sub blast_fasta_to_genomes
     #
     
     local $self->{_data_api}->{token} = $ctx->token;
+    print STDERR "Data api: " . Dumper($self->{_data_api});
     
     ($reports, $metadata) = $self->{_util}->blast_fasta_to_genomes($fasta_data, $program, $genomes, $subject_type, $evalue_cutoff, $max_hits, $min_coverage);
     

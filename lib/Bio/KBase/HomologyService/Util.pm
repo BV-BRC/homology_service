@@ -277,7 +277,6 @@ sub build_alias_database
     # We partition the genome list into private and public sets.
     #
 
-
     my @todo = @$subj_genomes;
     my $public = [];
     my $private = [];
@@ -290,17 +289,19 @@ sub build_alias_database
 					 ['in', 'genome_id', "($glist)"],
 					 ['select', 'genome_id', 'public', 'owner']);
 
+	print STDERR Dumper($glist, \@res);
 	for my $ent (@res)
 	{
 	    push(@{$ent->{public} ? $public : $private}, [$ent->{genome_id}, $ent->{owner}]);
 	}
     }
-    # print Dumper($public, $private);
+    print STDERR Dumper($public, $private);
 
     my @public_files = map { $self->find_genome_db($_->[0], $subj_db_type, $subj_type) } @$public;
     my @private_files = map { $self->find_private_genome_db($_->[0], $_->[1], $subj_db_type, $subj_type) } @$private;
 
     my @db_files = (@public_files, @private_files);
+    print STDERR Dumper(\@public_files, \@private_files);
     
     if (@db_files == 1)
     {

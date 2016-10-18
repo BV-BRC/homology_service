@@ -124,7 +124,7 @@ module HomologyService
 				   float evalue_cutoff,
 				   int max_hits,
 				   float min_coverage)
-	returns(list<Report> reports, mapping<string, FeatureMetadata> metadata);
+	returns(list<Report> reports, mapping<string, FeatureMetadata> metadata) authentication optional;
 
     funcdef blast_fasta_to_taxon(string fasta_data,
 				   string program,
