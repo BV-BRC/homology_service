@@ -34,6 +34,7 @@ sub new
     my $cfg = Bio::KBase::DeploymentConfig->new($ENV{KB_SERVICE_NAME} || "HomologyService");
 
     $self->{_blast_db_genomes} = $cfg->setting('blast-db-genomes');
+    $self->{_blast_db_private_genomes} = $cfg->setting('blast-db-private-genomes');
     $self->{_blast_db_databases} = $cfg->setting('blast-db-databases');
 
     $self->{_data_api} = P3DataAPI->new();

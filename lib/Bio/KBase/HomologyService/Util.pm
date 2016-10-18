@@ -3,6 +3,7 @@ package Bio::KBase::HomologyService::Util;
 use Bio::KBase::HomologyService::Bench;
 
 use strict;
+use File::Path 'make_path';
 use File::Temp;
 use File::Basename;
 use Data::Dumper;
@@ -11,8 +12,9 @@ use IPC::Run 'run';
 use JSON::XS;
 use DB_File;
 use LWP::UserAgent;
+use gjoseqlib;
 
-__PACKAGE__->mk_accessors(qw(blast_db_genomes impl json));
+__PACKAGE__->mk_accessors(qw(blast_db_genomes blast_db_private_genomes impl json));
 
 my %blast_command_subject_type = (blastp => 'a',
 				  blastn => 'd',
@@ -32,6 +34,7 @@ sub new
     my $self = {
 	impl => $impl,
 	blast_db_genomes => $impl->{_blast_db_genomes},
+	blast_db_private_genomes => $impl->{_blast_db_private_genomes},
 	json => JSON::XS->new->pretty(1),
     };
     return bless $self, $class;
@@ -101,26 +104,158 @@ sub find_private_genome_db
 {
     my($self, $genome, $owner, $db_type, $type) = @_;
 
-    my $base = $self->blast_db_private_genomes . "$owner/$genome";
+    my $base = $self->blast_db_private_genomes . "/$owner/$genome";
 
-    return ();
+    my $file;
+    my $check;
+    my $create;
     
-    my($file, $check) = $self->compute_db_filename($genome, $db_type, $type);
-
-    if (! -f $check)
+    if ($db_type =~ /^a/i)
     {
-	$self->create_private_genome_db($genome, $owner, $db_type, $type, $base, $file);
+	$file = "private.faa";
+	$check = "$file.pin";
+	$create = \&create_private_faa_db;
+    }
+    elsif ($db_type =~ /^d/i && $type =~ /^c/i)
+    {
+	$file = "private.fna";
+	$check = "$file.nin";
+	$create = \&create_private_fna_db;
+    }
+    elsif ($db_type =~ /^d/i && $type =~ /^f/i)
+    {
+	$file = "private.ffn";
+	$check = "$file.nin";
+	$create = \&create_private_ffn_db;
+    }
+    else
+    {
+	die "find_private_genome_db: Invalid combination of db_type=$db_type and type=$type";
     }
 
-    return $file;
+    if (! -f "$base/$check")
+    {
+	$self->$create($genome, $owner, $db_type, $type, $base, $file);
+    }
+
+    return "$base/$file";
 }
 
+sub create_private_faa_db
+{
+    my($self, $genome, $owner, $db_type, $type, $base, $file) = @_;
+    print STDERR "Create FAA $genome $owner\n";
 
-sub create_private_genome_db
+    my $api = $self->data_api;
+
+    make_path($base);
+    my $fasta_file = "$base/$file";
+
+    open(my $fasta_fh, ">", "$fasta_file") or die "create_private_faa_db: cannot write $fasta_file: $!";
+    $api->query_cb("genome_feature",
+		   sub {
+		       my ($data) = @_;
+		       for my $ent (@$data) {
+			   my $tag = join("|", @$ent{qw(patric_id refseq_locus_tag alt_locus_tag)});
+			   my $def = join("   ", $tag, $ent->{product}, "[$ent->{genome_name} | $genome]");
+			   print_alignment_as_fasta($fasta_fh, [$def, $ent->{aa_sequence}]);
+		       }
+		   },
+		   [ "eq",     "feature_type", "CDS" ],
+		   [ "eq",     "annotation",  "PATRIC" ],
+		   [ "eq",     "genome_id",    $genome ],
+		   [ "select", "patric_id,genome_name,product,refseq_locus_tag,alt_locus_tag,aa_sequence" ],
+		  );
+
+    close($fasta_fh);
+
+    my $exe = "makeblastdb";
+    my $suffix = $self->impl->{_blast_program_suffix};
+    $exe .= $suffix if $suffix;
+    my $prefix = $self->impl->{_blast_program_prefix};
+    $exe = $prefix . $exe if $prefix;
+
+    my @cmd = ($exe, "-in", $fasta_file, "-dbtype", "prot");
+    my $rc = system(@cmd);
+    $rc == 0 or die "Error $rc creating blastdb for $genome $owner: @cmd\n";
+}
+
+sub create_private_fna_db
 {
     my($self, $genome, $owner, $db_type, $type, $base, $file) = @_;
 
-    
+    print STDERR "Create FNA $genome $owner\n";
+    my $api = $self->data_api;
+
+    make_path($base);
+    my $fasta_file = "$base/$file";
+
+    open(my $fasta_fh, ">", "$fasta_file") or die "create_private_faa_db: cannot write $fasta_file: $!";
+    $api->query_cb("genome_sequence",
+		   sub {
+		       my ($data) = @_;
+		       for my $ent (@$data) {
+			   my $tag = "accn|" . $ent->{accession};
+			   my $desc = $ent->{description} // $ent->{genome_name};
+			   my $def = join("   ", $tag, $desc, "[$ent->{genome_name} | $genome]");
+			   print_alignment_as_fasta($fasta_fh, [$def, $ent->{sequence}]);
+		       }
+		   },
+		   [ "eq",     "genome_id",    $genome ],
+		   [ "eq",     "sequence_type",  "contig" ],
+		   [ "select", "description,genome_name,sequence,accession" ],
+		  );
+
+    close($fasta_fh);
+
+    my $exe = "makeblastdb";
+    my $suffix = $self->impl->{_blast_program_suffix};
+    $exe .= $suffix if $suffix;
+    my $prefix = $self->impl->{_blast_program_prefix};
+    $exe = $prefix . $exe if $prefix;
+
+    my @cmd = ($exe, "-in", $fasta_file, "-dbtype", "nucl");
+    my $rc = system(@cmd);
+    $rc == 0 or die "Error $rc creating blastdb for $genome $owner: @cmd\n";
+}
+
+sub create_private_ffn_db
+{
+    my($self, $genome, $owner, $db_type, $type, $base, $file) = @_;
+
+    print STDERR "Create FFN $genome $owner\n";
+    my $api = $self->data_api;
+
+    make_path($base);
+    my $fasta_file = "$base/$file";
+
+    open(my $fasta_fh, ">", "$fasta_file") or die "create_private_faa_db: cannot write $fasta_file: $!";
+    $api->query_cb("genome_feature",
+		   sub {
+		       my ($data) = @_;
+		       for my $ent (@$data) {
+			   my $tag = join("|", @$ent{qw(patric_id refseq_locus_tag alt_locus_tag)});
+			   my $def = join("   ", $tag, $ent->{product}, "[$ent->{genome_name} | $genome]");
+			   print_alignment_as_fasta($fasta_fh, [$def, $ent->{na_sequence}]);
+		       }
+		   },
+		   [ "ne",     "feature_type", "source" ],
+		   [ "eq",     "genome_id",    $genome ],
+		   [ "eq",     "annotation",  "PATRIC" ],
+		   [ "select", "patric_id,genome_name,product,refseq_locus_tag,alt_locus_tag,na_sequence" ],
+		  );
+
+    close($fasta_fh);
+
+    my $exe = "makeblastdb";
+    my $suffix = $self->impl->{_blast_program_suffix};
+    $exe .= $suffix if $suffix;
+    my $prefix = $self->impl->{_blast_program_prefix};
+    $exe = $prefix . $exe if $prefix;
+
+    my @cmd = ($exe, "-in", $fasta_file, "-dbtype", "nucl");
+    my $rc = system(@cmd);
+    $rc == 0 or die "Error $rc creating blastdb for $genome $owner: @cmd\n";
 }
 
 
