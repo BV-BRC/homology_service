@@ -151,6 +151,8 @@ sub create_private_faa_db
     make_path($base);
     my $fasta_file = "$base/$file";
 
+    my $sequence_count = 0;
+
     open(my $fasta_fh, ">", "$fasta_file") or die "create_private_faa_db: cannot write $fasta_file: $!";
     $api->query_cb("genome_feature",
 		   sub {
@@ -159,6 +161,7 @@ sub create_private_faa_db
 			   my $tag = join("|", @$ent{qw(patric_id refseq_locus_tag alt_locus_tag)});
 			   my $def = join("   ", $tag, $ent->{product}, "[$ent->{genome_name} | $genome]");
 			   print_alignment_as_fasta($fasta_fh, [$def, $ent->{aa_sequence}]);
+			   $sequence_count++;
 		       }
 		   },
 		   [ "eq",     "feature_type", "CDS" ],
@@ -168,6 +171,11 @@ sub create_private_faa_db
 		  );
 
     close($fasta_fh);
+
+    if ($sequence_count == 0)
+    {
+	die "Error creating BLAST FAA database for $genome (owned by $owner): No protein sequences found in genome\n";
+    }
 
     my $exe = "makeblastdb";
     my $suffix = $self->impl->{_blast_program_suffix};
@@ -190,6 +198,7 @@ sub create_private_fna_db
     make_path($base);
     my $fasta_file = "$base/$file";
 
+    my $sequence_count = 0;
     open(my $fasta_fh, ">", "$fasta_file") or die "create_private_faa_db: cannot write $fasta_file: $!";
     $api->query_cb("genome_sequence",
 		   sub {
@@ -199,6 +208,7 @@ sub create_private_fna_db
 			   my $desc = $ent->{description} // $ent->{genome_name};
 			   my $def = join("   ", $tag, $desc, "[$ent->{genome_name} | $genome]");
 			   print_alignment_as_fasta($fasta_fh, [$def, $ent->{sequence}]);
+			   $sequence_count++;
 		       }
 		   },
 		   [ "eq",     "genome_id",    $genome ],
@@ -207,6 +217,11 @@ sub create_private_fna_db
 		  );
 
     close($fasta_fh);
+
+    if ($sequence_count == 0)
+    {
+	die "Error creating BLAST FNA database for $genome (owned by $owner): No contig sequences found in genome\n";
+    }
 
     my $exe = "makeblastdb";
     my $suffix = $self->impl->{_blast_program_suffix};
@@ -229,6 +244,8 @@ sub create_private_ffn_db
     make_path($base);
     my $fasta_file = "$base/$file";
 
+    my $sequence_count = 0;
+
     open(my $fasta_fh, ">", "$fasta_file") or die "create_private_faa_db: cannot write $fasta_file: $!";
     $api->query_cb("genome_feature",
 		   sub {
@@ -237,6 +254,7 @@ sub create_private_ffn_db
 			   my $tag = join("|", @$ent{qw(patric_id refseq_locus_tag alt_locus_tag)});
 			   my $def = join("   ", $tag, $ent->{product}, "[$ent->{genome_name} | $genome]");
 			   print_alignment_as_fasta($fasta_fh, [$def, $ent->{na_sequence}]);
+			   $sequence_count++;
 		       }
 		   },
 		   [ "ne",     "feature_type", "source" ],
@@ -246,6 +264,11 @@ sub create_private_ffn_db
 		  );
 
     close($fasta_fh);
+
+    if ($sequence_count == 0)
+    {
+	die "Error creating BLAST FFN database for $genome (owned by $owner): No feature sequences found in genome\n";
+    }
 
     my $exe = "makeblastdb";
     my $suffix = $self->impl->{_blast_program_suffix};
@@ -498,14 +521,14 @@ sub blast_fasta_to_genomes
 	my $rsize = length($json);
 	my $logstr = "blast_fasta_to_genomes len=$len $stat program=$program genomes=$g ok=$ok" .
 		       ($ok ? " result_size=$rsize" : " err=$err");
-	if ($ctx)
-	{
-	    $ctx->log_info($logstr);
-	}
-	else
-	{
+	#if ($ctx)
+	#{
+	#    $ctx->log_info($logstr);
+	#}
+	#else
+	#{
 	    print STDERR $logstr, "\n";
-	}
+	#}
 	    
     }
 
@@ -715,14 +738,14 @@ sub blast_fasta_to_database
 	my $rsize = length($json);
 	my $logstr = "blast_fasta_to_database len=$len db_file=$db_file $stat program=$program ok=$ok" .
 		       ($ok ? " result_size=$rsize" : " err=$err");
-	if ($ctx)
-	{
-	    $ctx->log_info($logstr);
-	}
-	else
-	{
+	#if ($ctx)
+	#{
+	#    $ctx->log_info($logstr);
+	#}
+	#else
+	#{
 	    print STDERR $logstr, "\n";
-	}
+	#}
 	    
     }
 

@@ -1,6 +1,5 @@
 package Bio::KBase::HomologyService::HomologyServiceImpl;
 use strict;
-use Bio::KBase::Exceptions;
 # Use Semantic Versioning (2.0.0-rc.1)
 # http://semver.org 
 our $VERSION = "0.1.0";
@@ -313,8 +312,7 @@ sub blast_fasta_to_genomes
     (!ref($min_coverage)) or push(@_bad_arguments, "Invalid type for argument \"min_coverage\" (value was \"$min_coverage\")");
     if (@_bad_arguments) {
 	my $msg = "Invalid arguments passed to blast_fasta_to_genomes:\n" . join("", map { "\t$_\n" } @_bad_arguments);
-	Bio::KBase::Exceptions::ArgumentValidationError->throw(error => $msg,
-							       method_name => 'blast_fasta_to_genomes');
+	die $msg;
     }
 
     my $ctx = $Bio::KBase::HomologyService::Service::CallContext;
@@ -336,8 +334,7 @@ sub blast_fasta_to_genomes
     (ref($metadata) eq 'HASH') or push(@_bad_returns, "Invalid type for return variable \"metadata\" (value was \"$metadata\")");
     if (@_bad_returns) {
 	my $msg = "Invalid returns passed to blast_fasta_to_genomes:\n" . join("", map { "\t$_\n" } @_bad_returns);
-	Bio::KBase::Exceptions::ArgumentValidationError->throw(error => $msg,
-							       method_name => 'blast_fasta_to_genomes');
+	die $msg;
     }
     return($reports, $metadata);
 }
@@ -556,7 +553,7 @@ FeatureMetadata is a reference to a hash where the following keys are defined:
 =item Description
 
 Post demo we will slot this in here.
-BlastParameters blast_parameters
+                                      BlastParameters blast_parameters
 
 =back
 
@@ -577,8 +574,7 @@ sub blast_fasta_to_taxon
     (!ref($min_coverage)) or push(@_bad_arguments, "Invalid type for argument \"min_coverage\" (value was \"$min_coverage\")");
     if (@_bad_arguments) {
 	my $msg = "Invalid arguments passed to blast_fasta_to_taxon:\n" . join("", map { "\t$_\n" } @_bad_arguments);
-	Bio::KBase::Exceptions::ArgumentValidationError->throw(error => $msg,
-							       method_name => 'blast_fasta_to_taxon');
+	die $msg;
     }
 
     my $ctx = $Bio::KBase::HomologyService::Service::CallContext;
@@ -593,8 +589,7 @@ sub blast_fasta_to_taxon
     (ref($metadata) eq 'HASH') or push(@_bad_returns, "Invalid type for return variable \"metadata\" (value was \"$metadata\")");
     if (@_bad_returns) {
 	my $msg = "Invalid returns passed to blast_fasta_to_taxon:\n" . join("", map { "\t$_\n" } @_bad_returns);
-	Bio::KBase::Exceptions::ArgumentValidationError->throw(error => $msg,
-							       method_name => 'blast_fasta_to_taxon');
+	die $msg;
     }
     return($reports, $metadata);
 }
@@ -661,8 +656,7 @@ sub enumerate_databases
     (ref($return) eq 'ARRAY') or push(@_bad_returns, "Invalid type for return variable \"return\" (value was \"$return\")");
     if (@_bad_returns) {
 	my $msg = "Invalid returns passed to enumerate_databases:\n" . join("", map { "\t$_\n" } @_bad_returns);
-	Bio::KBase::Exceptions::ArgumentValidationError->throw(error => $msg,
-							       method_name => 'enumerate_databases');
+	die $msg;
     }
     return($return);
 }
@@ -904,8 +898,7 @@ sub blast_fasta_to_database
     (!ref($min_coverage)) or push(@_bad_arguments, "Invalid type for argument \"min_coverage\" (value was \"$min_coverage\")");
     if (@_bad_arguments) {
 	my $msg = "Invalid arguments passed to blast_fasta_to_database:\n" . join("", map { "\t$_\n" } @_bad_arguments);
-	Bio::KBase::Exceptions::ArgumentValidationError->throw(error => $msg,
-							       method_name => 'blast_fasta_to_database');
+	die $msg;
     }
 
     my $ctx = $Bio::KBase::HomologyService::Service::CallContext;
@@ -921,11 +914,11 @@ sub blast_fasta_to_database
     (ref($identical_proteins) eq 'HASH') or push(@_bad_returns, "Invalid type for return variable \"identical_proteins\" (value was \"$identical_proteins\")");
     if (@_bad_returns) {
 	my $msg = "Invalid returns passed to blast_fasta_to_database:\n" . join("", map { "\t$_\n" } @_bad_returns);
-	Bio::KBase::Exceptions::ArgumentValidationError->throw(error => $msg,
-							       method_name => 'blast_fasta_to_database');
+	die $msg;
     }
     return($reports, $metadata, $identical_proteins);
 }
+
 
 
 
@@ -963,6 +956,7 @@ Return the module version. This is a Semantic Versioning number.
 sub version {
     return $VERSION;
 }
+
 
 =head1 TYPES
 
@@ -1208,7 +1202,7 @@ stat has a value which is a Statistics
 =item Description
 
 structure {
-} bl2seq;
+            } bl2seq;
 
 
 =item Definition
