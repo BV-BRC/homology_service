@@ -74,6 +74,7 @@ compile-typespec: Makefile
 	touch lib/biop3/$(SERVICE_NAME_PY)/__init__.py 
 	mkdir -p lib/javascript/$(SERVICE_NAME)
 	compile_typespec \
+--patric \
 		--psgi $(SERVICE_PSGI_FILE) \
 		--impl Bio::KBase::$(SERVICE_NAME)::%sImpl \
 		--service Bio::KBase::$(SERVICE_NAME)::Service \
