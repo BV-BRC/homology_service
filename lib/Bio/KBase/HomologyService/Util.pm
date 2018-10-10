@@ -157,17 +157,20 @@ sub create_private_faa_db
     $api->query_cb("genome_feature",
 		   sub {
 		       my ($data) = @_;
+
+		       my $seqs = $api->lookup_sequence_data_hash([map { $_->{aa_sequence_md5} } @$data ]);
+		       
 		       for my $ent (@$data) {
 			   my $tag = join("|", @$ent{qw(patric_id refseq_locus_tag alt_locus_tag)});
 			   my $def = join("   ", $tag, $ent->{product}, "[$ent->{genome_name} | $genome]");
-			   print_alignment_as_fasta($fasta_fh, [$def, $ent->{aa_sequence}]);
+			   print_alignment_as_fasta($fasta_fh, [$def, $seqs->{$ent->{aa_sequence_md5}}]);
 			   $sequence_count++;
 		       }
 		   },
 		   [ "eq",     "feature_type", "CDS" ],
 		   [ "eq",     "annotation",  "PATRIC" ],
 		   [ "eq",     "genome_id",    $genome ],
-		   [ "select", "patric_id,genome_name,product,refseq_locus_tag,alt_locus_tag,aa_sequence" ],
+		   [ "select", "patric_id,genome_name,product,refseq_locus_tag,alt_locus_tag,aa_sequence_md5" ],
 		  );
 
     close($fasta_fh);
@@ -250,17 +253,20 @@ sub create_private_ffn_db
     $api->query_cb("genome_feature",
 		   sub {
 		       my ($data) = @_;
+
+		       my $seqs = $api->lookup_sequence_data_hash([map { $_->{na_sequence_md5} } @$data ]);
+		       
 		       for my $ent (@$data) {
 			   my $tag = join("|", @$ent{qw(patric_id refseq_locus_tag alt_locus_tag)});
 			   my $def = join("   ", $tag, $ent->{product}, "[$ent->{genome_name} | $genome]");
-			   print_alignment_as_fasta($fasta_fh, [$def, $ent->{na_sequence}]);
+			   print_alignment_as_fasta($fasta_fh, [$def, $seqs->{$ent->{na_sequence_md5}}]);
 			   $sequence_count++;
 		       }
 		   },
 		   [ "ne",     "feature_type", "source" ],
 		   [ "eq",     "genome_id",    $genome ],
 		   [ "eq",     "annotation",  "PATRIC" ],
-		   [ "select", "patric_id,genome_name,product,refseq_locus_tag,alt_locus_tag,na_sequence" ],
+		   [ "select", "patric_id,genome_name,product,refseq_locus_tag,alt_locus_tag,na_sequence_md5" ],
 		  );
 
     close($fasta_fh);
