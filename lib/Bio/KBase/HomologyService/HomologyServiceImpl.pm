@@ -18,7 +18,7 @@ HomologyService
 
 use Data::Dumper;
 use Bio::KBase::HomologyService::Util;
-use Bio::KBase::DeploymentConfig;
+use Bio::P3::DeploymentConfig;
 use P3DataAPI;
 
 #END_HEADER
@@ -31,7 +31,7 @@ sub new
     bless $self, $class;
     #BEGIN_CONSTRUCTOR
 
-    my $cfg = Bio::KBase::DeploymentConfig->new($ENV{KB_SERVICE_NAME} || "HomologyService");
+    my $cfg = Bio::P3::DeploymentConfig->new($ENV{KB_SERVICE_NAME} || "HomologyService");
 
     $self->{_blast_db_genomes} = $cfg->setting('blast-db-genomes');
     $self->{_blast_db_private_genomes} = $cfg->setting('blast-db-private-genomes');
@@ -74,16 +74,13 @@ sub new
     }
     return $self;
 }
-
 =head1 METHODS
-
-
-
 =head2 blast_fasta_to_genomes
 
   $reports, $metadata = $obj->blast_fasta_to_genomes($fasta_data, $program, $genomes, $subject_type, $evalue_cutoff, $max_hits, $min_coverage)
 
 =over 4
+
 
 =item Parameter and return types
 
@@ -183,7 +180,6 @@ FeatureMetadata is a reference to a hash where the following keys are defined:
 	locus_tag has a value which is a string
 	alt_locus_tag has a value which is a string
 	match_count has a value which is an int
-
 </pre>
 
 =end html
@@ -284,13 +280,11 @@ FeatureMetadata is a reference to a hash where the following keys are defined:
 	alt_locus_tag has a value which is a string
 	match_count has a value which is an int
 
-
 =end text
 
 
 
 =item Description
-
 
 
 =back
@@ -340,13 +334,12 @@ sub blast_fasta_to_genomes
 }
 
 
-
-
 =head2 blast_fasta_to_taxon
 
   $reports, $metadata = $obj->blast_fasta_to_taxon($fasta_data, $program, $taxon_id, $subject_type, $evalue_cutoff, $max_hits, $min_coverage)
 
 =over 4
+
 
 =item Parameter and return types
 
@@ -445,7 +438,6 @@ FeatureMetadata is a reference to a hash where the following keys are defined:
 	locus_tag has a value which is a string
 	alt_locus_tag has a value which is a string
 	match_count has a value which is an int
-
 </pre>
 
 =end html
@@ -545,7 +537,6 @@ FeatureMetadata is a reference to a hash where the following keys are defined:
 	alt_locus_tag has a value which is a string
 	match_count has a value which is an int
 
-
 =end text
 
 
@@ -554,7 +545,6 @@ FeatureMetadata is a reference to a hash where the following keys are defined:
 
 Post demo we will slot this in here.
                                       BlastParameters blast_parameters
-
 =back
 
 =cut
@@ -595,13 +585,12 @@ sub blast_fasta_to_taxon
 }
 
 
-
-
 =head2 enumerate_databases
 
   $return = $obj->enumerate_databases()
 
 =over 4
+
 
 =item Parameter and return types
 
@@ -614,7 +603,6 @@ DatabaseDescription is a reference to a hash where the following keys are define
 	key has a value which is a string
 	db_type has a value which is a string
 	seq_count has a value which is an int
-
 </pre>
 
 =end html
@@ -628,13 +616,11 @@ DatabaseDescription is a reference to a hash where the following keys are define
 	db_type has a value which is a string
 	seq_count has a value which is an int
 
-
 =end text
 
 
 
 =item Description
-
 
 
 =back
@@ -662,13 +648,12 @@ sub enumerate_databases
 }
 
 
-
-
 =head2 blast_fasta_to_database
 
   $reports, $metadata, $identical_proteins = $obj->blast_fasta_to_database($fasta_data, $program, $database_key, $evalue_cutoff, $max_hits, $min_coverage)
 
 =over 4
+
 
 =item Parameter and return types
 
@@ -769,7 +754,6 @@ FeatureMetadata is a reference to a hash where the following keys are defined:
 	locus_tag has a value which is a string
 	alt_locus_tag has a value which is a string
 	match_count has a value which is an int
-
 </pre>
 
 =end html
@@ -871,13 +855,11 @@ FeatureMetadata is a reference to a hash where the following keys are defined:
 	alt_locus_tag has a value which is a string
 	match_count has a value which is an int
 
-
 =end text
 
 
 
 =item Description
-
 
 
 =back
@@ -958,6 +940,7 @@ sub version {
 }
 
 
+
 =head1 TYPES
 
 
@@ -965,7 +948,6 @@ sub version {
 =head2 HitDescr
 
 =over 4
-
 
 
 =item Definition
@@ -1003,7 +985,6 @@ sciname has a value which is a string
 =head2 Hsp
 
 =over 4
-
 
 
 =item Definition
@@ -1077,7 +1058,6 @@ midline has a value which is a string
 =over 4
 
 
-
 =item Definition
 
 =begin html
@@ -1111,7 +1091,6 @@ hsps has a value which is a reference to a list where each element is a Hsp
 =head2 Statistics
 
 =over 4
-
 
 
 =item Definition
@@ -1155,11 +1134,9 @@ entropy has a value which is a float
 =over 4
 
 
-
 =item Description
 
 need: query-masking
-
 
 =item Definition
 
@@ -1198,12 +1175,10 @@ stat has a value which is a Statistics
 =over 4
 
 
-
 =item Description
 
 structure {
             } bl2seq;
-
 
 =item Definition
 
@@ -1284,7 +1259,6 @@ search has a value which is a Search
 =over 4
 
 
-
 =item Definition
 
 =begin html
@@ -1308,7 +1282,6 @@ a string
 =head2 FeatureMetadata
 
 =over 4
-
 
 
 =item Definition
@@ -1352,7 +1325,6 @@ match_count has a value which is an int
 =over 4
 
 
-
 =item Definition
 
 =begin html
@@ -1386,11 +1358,9 @@ min_coverage has a value which is a float
 =over 4
 
 
-
 =item Description
 
 db_type is either "dna" or "protein"
-
 
 =item Definition
 
@@ -1419,7 +1389,6 @@ seq_count has a value which is an int
 =end text
 
 =back
-
 
 
 =cut
