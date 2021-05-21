@@ -54,21 +54,21 @@ sub compute_db_filename
     if ($db_type =~ /^a/i)
     {
 	push(@candidates,
-	     ["PATRIC.faa", "PATRIC.faa.pin"],
-	     ["RefSeq.faa", "RefSeq.faa.pin"]);
+	     ["PATRIC.faa", "PATRIC.faa.pin", "faa"],
+	     ["RefSeq.faa", "RefSeq.faa.pin", "faa"]);
     }
     elsif ($db_type =~ /^d/i && $type =~ /^c/i)
     {
 	push(@candidates,
-	     ["fna", "fna.nin"]);
+	     ["fna", "fna.nin", "fna"]);
     }
     elsif ($db_type =~ /^d/i && $type =~ /^f/i)
     {
 	push(@candidates,
-	     ["PATRIC.ffn", "PATRIC.ffn.nin"],
-	     ["RefSeq.ffn", "RefSeq.ffn.nin"],
-	     ["PATRIC.frn", "PATRIC.frn.nin"],
-	     ["RefSeq.frn", "RefSeq.frn.nin"]);
+	     ["PATRIC.ffn", "PATRIC.ffn.nin", "ffn"],
+	     ["RefSeq.ffn", "RefSeq.ffn.nin", "ffn"],
+	     ["PATRIC.frn", "PATRIC.frn.nin", "frn"],
+	     ["RefSeq.frn", "RefSeq.frn.nin", "frn"]);
     }
     else
     {
@@ -85,18 +85,31 @@ sub find_genome_db
     my $base = $self->blast_db_genomes . "/$genome";
 
     my @candidates = $self->compute_db_filename($genome, $db_type, $type);
-
+    print STDERR Dumper(\@candidates);
     my @paths;
     for my $cand (@candidates)
     {
-	my($file, $check) = @$cand;
+	my($file, $check, $subdir) = @$cand;
 	my $path = "$base.$file";
 	my $check_path = "$base.$check";
 	if (-f $check_path)
 	{
 	    push(@paths, $path);
 	}
+	else
+	{
+	    # Try the new path
+	    my $dir = $self->blast_db_genomes . "/$subdir";
+	    $path = "$dir/$genome.$file";
+	    $check_path = "$dir/$genome.$check";
+	    print STDERR "Try $check_path\n";
+	    if (-f $check_path)
+	    {
+		push(@paths, $path);
+	    }
+	}
     }
+    print STDERR "candidate paths: @paths\n";
     return @paths;
 }
 
@@ -371,7 +384,7 @@ sub build_alias_database
 		 "-title", $title,
 		 "-dbtype", (($subj_db_type =~ /^a/i) ? 'prot' : 'nucl'),
 		 "-out", "$db_file"];
-    # print STDERR "@$build_db\n";
+    print STDERR "@$build_db\n";
     my $ok = run($build_db);
     $ok or die "Error running database build @$build_db\n";
     print STDERR "Built db $db_file\n";
