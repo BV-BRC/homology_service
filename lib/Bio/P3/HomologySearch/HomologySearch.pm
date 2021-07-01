@@ -21,7 +21,7 @@ database type in the C<db_type> parameter.
 =item * 
 
 Protein features. These are the amino acid sequences of the protein encoding genes in 
-the genome. The suffix is I<ffa>.
+the genome. The suffix is I<faa>.
 
 =item *
 
@@ -168,6 +168,8 @@ __PACKAGE__->mk_accessors(qw(app app_def params token task_id
 			     work_dir stage_dir
 			     output_base output_folder 
 			     contigs app_params  api
+			     database_path
+			     json
 			    ));
 
 
@@ -176,19 +178,19 @@ __PACKAGE__->mk_accessors(qw(app app_def params token task_id
 #
 our %search_type_map =
     (aa => {
-	ffa => ['blastp'],
+	faa => ['blastp'],
 	ffn => ['tblastn'],
 	frn => ['tblastn'],
 	fna => ['tblastn'],
     },
      dna => {
-	 ffa => ['blastx'],
+	 faa => ['blastx'],
 	 ffn => ['blastn', 'tblastx'],
 	 frn => ['blastn', 'tblastx'],
 	 fna => ['blastn', 'tblastx'],
      });
 				    
-our %makeblastdb_dbtype = (ffa => "prot",
+our %makeblastdb_dbtype = (faa => "prot",
 			   ffn => "nucl",
 			   frn => "nucl",
 			   fna => "nucl");
@@ -199,6 +201,8 @@ sub new
 
     my $self = {
 	api => P3DataAPI->new(data_api_url),
+	database_path => ["/vol/bvbrc/blast"],
+	json => JSON::XS->new->pretty,
     };
 
     bless $self, $class;
@@ -231,7 +235,11 @@ sub load_databases
 
 sub databases
 {
-    my($self) = @_;
+    my($self, $val) = @_;
+    if (defined($val))
+    {
+	$self->{databases} = $val;
+    }
     return wantarray ? @{$self->{databases}} : $self->{databases};
 }
 
@@ -286,6 +294,21 @@ sub process
     $self->blast_program($blast_program);
 
     $self->run_blast($params, $input_file, $db_file, $blast_program, $blast_params, $work_dir);
+
+    # Write output
+
+    my %typemap = (json => 'json',
+		   archive => 'unspecified',
+		   tsv => 'tsv');
+
+    for my $out (glob("$work_dir/*"))
+    {
+	my $file = basename($out);
+	my($suffix) = $out =~ /\.([^.]+)$/;
+	my $type = $typemap{$suffix} // 'unspecified';
+	$self->app->workspace->save_file_to_file($out, {}, "$output_folder/$file", $type, 1, 1);
+    }
+	
 }
 
 =head2 stage_input
@@ -426,19 +449,38 @@ sub stage_database_precomputed_database
     {
 	die "Cannot find precomputed database $db\n";
     }
-    die Dumper(@cands);
+
+    for my $cand (@cands)
+    {
+	for my $db (grep { $_->{type} eq $params->{db_type} } @{$cand->{db_list}})
+	{
+	    for my $p (@{$self->{database_path}})
+	    {
+		my $file = "$p/$db->{path}";
+		for my $suf (qw(pal nal))
+		{
+		    my $chk = "$file.$suf";
+		    if (-f $chk)
+		    {
+			return ($file);
+		    }
+		}
+	    }
+	}
+    }
+    return undef;
 }
 
 sub read_and_validate_fasta
 {
     my($self, $in_fh, $type, $out_fh) = @_;
     
-    my %val_re = (ffa => qr/^[a-z]+$/i,
+    my %val_re = (faa => qr/^[a-z]+$/i,
 		  ffn => qr/^[actg]+$/i,
 		  frn => qr/^[actg]+$/i,
 		  fna => qr/^[actg]+$/i);
 
-    my $is_prot = $type eq 'ffa';
+    my $is_prot = $type eq 'faa';
 
     my $re = $val_re{$type};
     $re or die "read_and_validate_fasta: invalid type $type\n";
@@ -499,6 +541,9 @@ sub run_blast
     push(@opts, "-num_threads", $cpus);
 
     my $out_file = "$work_dir/blast_out.archive";
+    my $out_json_file = "$work_dir/blast_out.raw.json";
+    my $out_proc_json_file = "$work_dir/blast_out.json";
+    my $out_md_file = "$work_dir/blast_out.metadata.json";
 
     push(@opts,
 	 "-query", $input_file,
@@ -507,8 +552,134 @@ sub run_blast
 	 "-out", $out_file,
 	);
 
-    my $ok = run([$blast_program, @opts]);
-    $ok or die "Error running $blast_program @opts: $!";
+    # my $ok = run([$blast_program, @opts]);
+    # $ok or die "Error running $blast_program @opts: $!";
+
+    #
+    # We wrote blast archive output. Use blast_formatter to
+    # create json output.
+    #
+
+    my $ok = run(["blast_formatter",
+	       "-archive", $out_file,
+	       "-outfmt", 15,
+	       "-out", $out_json_file]);
+    $ok or die "Error running blast formatter: $!";
+    my $txt = read_file($out_json_file);
+    my($doc, $metadata) = $self->massage_blast_json($txt);
+    write_file($out_proc_json_file, $self->json->encode($doc));
+    write_file($out_md_file, $self->json->encode($metadata));
 }
+
+sub massage_blast_json
+{
+    my($self, $json) = @_;
+    my $doc = eval { $self->json->decode($json) };
+    if ($@)
+    {
+	die "json parse failed: $@\n$json\n";
+    }
+    $doc = $doc->{BlastOutput2};
+    $doc or die "JSON output didn't have expected key BlastOutput2";
+
+    my $metadata = {};
+    for my $report (@$doc)
+    {
+	my $search = $report->{report}->{results}->{search};
+	$search->{query_id} =~ s/^gnl\|//;
+	if ($search->{query_id} =~ /^Query_\d+/)
+	{
+	    my($xid) = $search->{query_title} =~ /^(\S+)/;
+	    $search->{query_id} = $xid if $xid;
+	}
+	for my $res (@{$search->{hits}})
+	{
+	    for my $desc (@{$res->{description}})
+	    {
+		my $md = $self->decode_title($desc);
+		
+		$metadata->{$desc->{id}} = $md if $md;
+	    }
+	}
+    }
+    return($doc, $metadata);
+}
+
+sub decode_title
+{
+    my($self, $desc) = @_;
+	
+    my $md;
+    
+    if ($desc->{id} =~ /^gnl\|BL_ORD/)
+    {
+	if ($desc->{title} =~ /^(\S+)\s{3}(.*)\s{3}(.*)$/)
+	{
+	    my $id = $1;
+	    my $fun = $2;
+	    my $ginfo = $3;
+	    $id =~ s/^((fig\|\d+\.\d+.[^.]+\.\d+)|(accn\|[^|]+))//;
+	    my $fid = $1;
+	    print "id=$id\n";
+	    $id =~ s/^\|//;
+	    $id =~ s/\|$//;
+	    my @rest = split(/\|/, $id);
+	    my $locus;
+	    my $alt;
+	    if (@rest == 2)
+	    {
+		($locus, $alt) = @rest;
+		$md->{locus_tag} = $locus;
+		$md->{alt_locus_tag} = $alt;
+	    }
+	    elsif (@rest == 1)
+	    {
+		$alt = $rest[0];
+		$md->{alt_locus_tag} = $alt;
+	    }
+	    if ($ginfo =~ /^\[(.*) \| (\d+\.\d+)/)
+	    {
+		$md->{genome_name} = $1;
+		$md->{genome_id} = $2;
+	    }
+	    $desc->{id} = $fid;
+	    $md->{function} = $fun;
+	}
+	elsif ($desc->{title} =~ /^(\S+)\s+(.*)\s{3}\[(.*?)(\s*\|\s*(\S+))?\]\s*$/)
+	{
+	    $desc->{id} = $1;
+	    $md->{function} = $2;
+	    $md->{genome_name} = $3;
+	    $md->{genome_id} = $5 if $5;
+	}
+	elsif ($desc->{title} =~ /^(\S+)\s+\[(.*?)(\s*\|\s*(\S+))?\]\s*$/)
+	{
+	    $desc->{id} = $1;
+	    $md->{genome_name} = $2;
+	    $md->{genome_id} = $4 if $4;
+	}
+    }
+    else
+    {
+	$desc->{id} =~ s/^gnl\|//;
+	if ($desc->{title} =~ /^\s*(.*)\s{3}\[(.*?)(\s*\|\s*(\S+))?\]\s*$/)
+	{
+	    $md->{function} = $1;
+	    $md->{genome_name} = $2;
+	    $md->{genome_id} = $4 if $4;
+	}
+	elsif ($desc->{title} =~ /^\s*\[(.*?)(\s*\|\s*(\S+))?\]\s*$/)
+	{
+	    $md->{genome_name} = $1;
+	    $md->{genome_id} = $3 if $3;
+	}
+    }
+    if ($desc->{id} =~ /^(kb\|g\.\d+)/)
+    {
+	$md->{genome_id} = $1;
+    }
+    return $md;
+}
+
 
 1;

@@ -1,14 +1,253 @@
 [
-    { 
-	"name": "Bacillus",
-	"description": "All genomes in the genus Bacillus",
-	"db_list":
-	[
-	    {
-		"type": "ffa",
-		"path": "by-taxon/Bacillus.features.faa"
-	    }
-	]
+    {
+	"db_list" : [
+            {
+		"path" : "by-taxon/Acinetobacter.features.faa",
+		"type" : "faa"
+            }
+	],
+	"description" : "All genomes in the genus Acinetobacter",
+	"name" : "Acinetobacter"
+    },
+    {
+	"db_list" : [
+            {
+		"path" : "by-taxon/Bacillus.features.faa",
+		"type" : "faa"
+            }
+	],
+	"description" : "All genomes in the genus Bacillus",
+	"name" : "Bacillus"
+    },
+    {
+	"db_list" : [
+            {
+		"path" : "by-taxon/Bartonella.features.faa",
+		"type" : "faa"
+            }
+	],
+	"description" : "All genomes in the genus Bartonella",
+	"name" : "Bartonella"
+    },
+    {
+	"db_list" : [
+            {
+		"path" : "by-taxon/Borreliella.features.faa",
+		"type" : "faa"
+            }
+	],
+	"description" : "All genomes in the genus Borreliella",
+	"name" : "Borreliella"
+    },
+    {
+	"db_list" : [
+            {
+		"path" : "by-taxon/Burkholderia.features.faa",
+		"type" : "faa"
+            }
+	],
+	"description" : "All genomes in the genus Burkholderia",
+	"name" : "Burkholderia"
+    },
+    {
+	"db_list" : [
+            {
+		"path" : "by-taxon/Campylobacter.features.faa",
+		"type" : "faa"
+            }
+	],
+	"description" : "All genomes in the genus Campylobacter",
+	"name" : "Campylobacter"
+    },
+    {
+	"db_list" : [
+            {
+		"path" : "by-taxon/Chlamydia.features.faa",
+		"type" : "faa"
+            }
+	],
+	"description" : "All genomes in the genus Chlamydia",
+	"name" : "Chlamydia"
+    },
+    {
+	"db_list" : [
+            {
+		"path" : "by-taxon/Clostridium.features.faa",
+		"type" : "faa"
+            }
+	],
+	"description" : "All genomes in the genus Clostridium",
+	"name" : "Clostridium"
+    },
+    {
+	"db_list" : [
+            {
+		"path" : "by-taxon/Coxiella.features.faa",
+		"type" : "faa"
+            }
+	],
+	"description" : "All genomes in the genus Coxiella",
+	"name" : "Coxiella"
+    },
+    {
+	"db_list" : [
+            {
+		"path" : "by-taxon/Ehrlichia.features.faa",
+		"type" : "faa"
+            }
+	],
+	"description" : "All genomes in the genus Ehrlichia",
+	"name" : "Ehrlichia"
+    },
+    {
+	"db_list" : [
+            {
+		"path" : "by-taxon/Enterococcus.features.faa",
+		"type" : "faa"
+            }
+	],
+	"description" : "All genomes in the genus Enterococcus",
+	"name" : "Enterococcus"
+    },
+    {
+	"db_list" : [
+            {
+		"path" : "by-taxon/Escherichia.features.faa",
+		"type" : "faa"
+            }
+	],
+	"description" : "All genomes in the genus Escherichia",
+	"name" : "Escherichia"
+    },
+    {
+	"db_list" : [
+            {
+		"path" : "by-taxon/Francisella.features.faa",
+		"type" : "faa"
+            }
+	],
+	"description" : "All genomes in the genus Francisella",
+	"name" : "Francisella"
+    },
+    {
+	"db_list" : [
+            {
+		"path" : "by-taxon/Klebsiella.features.faa",
+		"type" : "faa"
+            }
+	],
+	"description" : "All genomes in the genus Klebsiella",
+	"name" : "Klebsiella"
+    },
+    {
+	"db_list" : [
+            {
+		"path" : "by-taxon/Mycobacterium.features.faa",
+		"type" : "faa"
+            }
+	],
+	"description" : "All genomes in the genus Mycobacterium",
+	"name" : "Mycobacterium"
+    },
+    {
+	"db_list" : [
+            {
+		"path" : "by-taxon/Neisseria.features.faa",
+		"type" : "faa"
+            }
+	],
+	"description" : "All genomes in the genus Neisseria",
+	"name" : "Neisseria"
+    },
+    {
+	"db_list" : [
+            {
+		"path" : "by-taxon/OTHER.features.faa",
+		"type" : "faa"
+            }
+	],
+	"description" : "All genomes in the genus OTHER",
+	"name" : "OTHER"
+    },
+    {
+	"db_list" : [
+            {
+		"path" : "by-taxon/Pseudomonas.features.faa",
+		"type" : "faa"
+            }
+	],
+	"description" : "All genomes in the genus Pseudomonas",
+	"name" : "Pseudomonas"
+    },
+    {
+	"db_list" : [
+            {
+		"path" : "by-taxon/Rickettsia.features.faa",
+		"type" : "faa"
+            }
+	],
+	"description" : "All genomes in the genus Rickettsia",
+	"name" : "Rickettsia"
+    },
+    {
+	"db_list" : [
+            {
+		"path" : "by-taxon/Salmonella.features.faa",
+		"type" : "faa"
+            }
+	],
+	"description" : "All genomes in the genus Salmonella",
+	"name" : "Salmonella"
+    },
+    {
+	"db_list" : [
+            {
+		"path" : "by-taxon/Shigella.features.faa",
+		"type" : "faa"
+            }
+	],
+	"description" : "All genomes in the genus Shigella",
+	"name" : "Shigella"
+    },
+    {
+	"db_list" : [
+            {
+		"path" : "by-taxon/Staphylococcus.features.faa",
+		"type" : "faa"
+            }
+	],
+	"description" : "All genomes in the genus Staphylococcus",
+	"name" : "Staphylococcus"
+    },
+    {
+	"db_list" : [
+            {
+		"path" : "by-taxon/Streptococcus.features.faa",
+		"type" : "faa"
+            }
+	],
+	"description" : "All genomes in the genus Streptococcus",
+	"name" : "Streptococcus"
+    },
+    {
+	"db_list" : [
+            {
+		"path" : "by-taxon/Vibrio.features.faa",
+		"type" : "faa"
+            }
+	],
+	"description" : "All genomes in the genus Vibrio",
+	"name" : "Vibrio"
+    },
+    {
+	"db_list" : [
+            {
+		"path" : "by-taxon/Yersinia.features.faa",
+		"type" : "faa"
+            }
+	],
+	"description" : "All genomes in the genus Yersinia",
+	"name" : "Yersinia"
     },
     {
 	"name": "BacteriaArchaea",
@@ -16,12 +255,12 @@
 	"db_list":
 	[
 	    {
-		"type": "ffa",
+		"type": "faa",
 		"path": "ref/bacteria-archaea.features.faa"
 	    }
 	]
     }
 ]
-	    
 
-	
+
+

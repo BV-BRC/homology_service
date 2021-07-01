@@ -45,7 +45,7 @@
 	    "label": "Database type to search (protein / DNA / RNA / contigs)",
 	    "required": 1,
 	    "type": "enum",
-	    "enum": ["ffa", "ffn", "frn", "fna"]
+	    "enum": ["faa", "ffn", "frn", "fna"]
 	},
 	{
 	    "id": "db_source",
