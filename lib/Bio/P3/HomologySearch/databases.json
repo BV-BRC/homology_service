@@ -1,0 +1,27 @@
+[
+    { 
+	"name": "Bacillus",
+	"description": "All genomes in the genus Bacillus",
+	"db_list":
+	[
+	    {
+		"type": "ffa",
+		"path": "by-taxon/Bacillus.features.faa"
+	    }
+	]
+    },
+    {
+	"name": "BacteriaArchaea",
+	"description": "Reference and representative genomes in the Bacteria and Archaea",
+	"db_list":
+	[
+	    {
+		"type": "ffa",
+		"path": "ref/bacteria-archaea.features.faa"
+	    }
+	]
+    }
+]
+	    
+
+	
