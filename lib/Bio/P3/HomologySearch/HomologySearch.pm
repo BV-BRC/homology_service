@@ -552,8 +552,8 @@ sub run_blast
 	 "-out", $out_file,
 	);
 
-    # my $ok = run([$blast_program, @opts]);
-    # $ok or die "Error running $blast_program @opts: $!";
+    my $ok = run([$blast_program, @opts]);
+    $ok or die "Error running $blast_program @opts: $!";
 
     #
     # We wrote blast archive output. Use blast_formatter to

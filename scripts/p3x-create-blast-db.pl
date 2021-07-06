@@ -136,7 +136,7 @@ for my $g (@$genomes)
     $sched->add_work($g, $genome_length);
 }
 
-my $tmpdir = File::Temp->newdir(CLEANUP => 0);;
+my $tmpdir = File::Temp->newdir(CLEANUP => 1);
 my $dbdir = "$tmpdir/db";
 my $taxdir = "$tmpdir/tax";
 
@@ -165,26 +165,56 @@ $sched->run($boot, sub {
     }
     my $skip;
     my %seen;
-    while (my($rawid, $def, $seq) = read_next_fasta(\*P))
+    if ($ftype eq 'features')
     {
-	if ($rawid =~ /^(fig\|\d+\.\d+\.[^.]+\.\d+)/)
+	while (my($rawid, $def, $seq) = read_next_fasta(\*P))
 	{
-	    my $id = "gnl|$1";
-
-	    if ($seen{$id}++)
+	    if ($rawid =~ /^(fig\|\d+\.\d+\.[^.]+\.\d+)/)
 	    {
-		warn "Skipping duplicate id $id\n";
-	    }
-	    else
-	    {
-		if ($seq !~ /^[a-z*]+$/i)
+		my $id = "gnl|$1";
+		
+		if ($seen{$id}++)
 		{
-		    warn "Bad sequence $id\n";
+		    warn "Skipping duplicate id $id\n";
 		}
 		else
 		{
-		    print_alignment_as_fasta($db, [$id, undef, $seq]);
-		    print $tax "$id\t$taxon_id\n";
+		    if ($seq !~ /^[a-z*]+$/i)
+		    {
+			warn "Bad sequence $id\n";
+		    }
+		    else
+		    {
+			print_alignment_as_fasta($db, [$id, undef, $seq]);
+			print $tax "$id\t$taxon_id\n";
+		    }
+		}
+	    }
+	}
+    }
+    else
+    {
+	while (my($rawid, $def, $seq) = read_next_fasta(\*P))
+	{
+	    if ($rawid =~ /^(\S+)/)
+	    {
+		my $id = "lcl|$1";
+		
+		if ($seen{$id}++)
+		{
+		    warn "Skipping duplicate id $id\n";
+		}
+		else
+		{
+		    if ($seq !~ /^[a-z*]+$/i)
+		    {
+			warn "Bad sequence $id\n";
+		    }
+		    else
+		    {
+			print_alignment_as_fasta($db, [$id, undef, $seq]);
+			print $tax "$id\t$taxon_id\n";
+		    }
 		}
 	    }
 	}

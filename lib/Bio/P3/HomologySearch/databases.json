@@ -257,6 +257,10 @@
 	    {
 		"type": "faa",
 		"path": "ref/bacteria-archaea.features.faa"
+	    },
+	    {
+		"type": "fna",
+		"path": "ref/bacteria-archaea.contigs.fna"
 	    }
 	]
     }
