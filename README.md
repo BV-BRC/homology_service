@@ -8,3 +8,4 @@ the settings used to define their locations.
 
 The default deployment will download the specific version of the BLAST+  command line tools 
 required (this code uses the JSON output format which was not intially correct in BLAST).
+

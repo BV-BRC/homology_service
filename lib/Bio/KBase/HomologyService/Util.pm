@@ -430,7 +430,7 @@ sub construct_blast_command
     }
 
     #
-    # if we have hsort sequences, use the tasks optimized for that.
+    # if we have short sequences, use the tasks optimized for that.
     #
     if ($program eq 'blastn' && $is_short)
     {

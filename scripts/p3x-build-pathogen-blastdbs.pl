@@ -6,13 +6,16 @@ use File::Path qw(make_path);
 
 use LPTScheduler;
 
-my $out_dir = "/disks/tmp/all.dbs.2";
+$ENV{TMPDIR} = "/disks/tmp";
+
+my $out_dir = "/vol/blastdb/bvbrc-service/by-genus";
+#my $out_dir = "/disks/tmp/all.dbs.2";
 make_path($out_dir);
 
-my $n_procs = 12;
+my $n_procs = 6;
 my $n_build_procs = 2;
 
-my $dbtype = 'aa';
+my $dbtype = 'dna';
 my $ftype = 'features';
 
 my $sched = LPTScheduler->new($n_procs);

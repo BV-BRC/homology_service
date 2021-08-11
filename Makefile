@@ -5,6 +5,8 @@ TARGET ?= /kb/deployment
 DEPLOY_RUNTIME ?= /kb/runtime
 SERVER_SPEC = HomologyService.spec
 
+APP_SERVICE = app_service
+
 #
 # This layout is specfic to the current (January 2016) layout of 
 # the NCBI BLAST distribution.
@@ -95,11 +97,15 @@ deploy-all: deploy-client deploy-service
 deploy-client: compile-typespec deploy-docs deploy-libs deploy-scripts 
 
 
-deploy-service: deploy-dir deploy-libs deploy-service-scripts deploy-blast
+deploy-service: deploy-dir deploy-libs deploy-service-scripts deploy-blast deploy-specs
 	$(TPAGE) $(TPAGE_ARGS) service/start_service.tt > $(TARGET)/services/$(SERVICE)/start_service
 	chmod +x $(TARGET)/services/$(SERVICE)/start_service
 	$(TPAGE) $(TPAGE_ARGS) service/stop_service.tt > $(TARGET)/services/$(SERVICE)/stop_service
 	chmod +x $(TARGET)/services/$(SERVICE)/stop_service
+
+deploy-specs:
+	mkdir -p $(TARGET)/services/$(APP_SERVICE)
+	rsync -arv app_specs $(TARGET)/services/$(APP_SERVICE)/.
 
 deploy-service-scripts:
 	export KB_TOP=$(TARGET); \
