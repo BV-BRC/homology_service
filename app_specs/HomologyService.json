@@ -94,7 +94,7 @@
 	    "label": "BLAST program to use",
 	    "required": 0,
 	    "type": "enum",
-	    "enum": ["blastp", "blastn", "tblastn", "tblastx"]
+	    "enum": ["blastp", "blastn", "blastx", "tblastn", "tblastx"]
 	},
         {
             "id": "output_path",
