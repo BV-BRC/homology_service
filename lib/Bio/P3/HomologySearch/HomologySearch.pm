@@ -160,6 +160,7 @@ use Text::CSV_XS qw(csv);
 use Bio::KBase::AppService::ClientExt;
 use Bio::KBase::AppService::AppConfig qw(data_api_url);
 use Bio::KBase::AppService::FastaParser 'parse_fasta';
+use Bio::P3::Workspace::WorkspaceClientExt;
 
 use File::Slurp;
 
@@ -373,6 +374,29 @@ sub stage_input_fasta_data
     if (open(my $fh, ">", $file))
     {
 	print $fh $params->{input_fasta_data};
+	close($fh);
+    }
+    else
+    {
+	die "Cannot open $file for writing: $!";
+    }
+    return $file;
+}
+
+#
+# Stage input from a workspace file
+sub stage_input_fasta_file
+{
+    my($self, $params, $stage_dir) = @_;
+
+    my $file = "$stage_dir/input_$params->{input_type}.fa";
+    my $ws = Bio::P3::Workspace::WorkspaceClientExt->new;
+
+    if (open(my $fh, ">", $file))
+    {
+
+	$ws->copy_files_to_handles(1, undef, [[$params->{input_fasta_file}, $fh]]);
+
 	close($fh);
     }
     else
