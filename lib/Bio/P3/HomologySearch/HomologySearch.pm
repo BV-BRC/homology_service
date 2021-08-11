@@ -107,7 +107,7 @@ may be queried using the HomologySearch service.
 =head2 Specifying behavior
 
 The BLAST program to use is defined by the C<blast_program> parameter. Valid values
-are C<blastp>, C<blastn>, C<tblastn>, C<tblastx>. A value is not required; if not
+are C<blastp>, C<blastn>, C<blastx>, C<tblastn>, C<tblastx>. A value is not required; if not
 specified, the appropriate program is chosen for the given input and database types.
 For DNA to DNA searches, C<blastn> is the default.
 
@@ -356,6 +356,23 @@ sub stage_input_id_list
 	{
 	    print_alignment_as_fasta($fh, [$id, undef, $seqs->{$id}]);
 	}
+	close($fh);
+    }
+    else
+    {
+	die "Cannot open $file for writing: $!";
+    }
+    return $file;
+}
+
+sub stage_input_fasta_data
+{
+    my($self, $params, $stage_dir) = @_;
+
+    my $file = "$stage_dir/input_$params->{input_type}.fa";
+    if (open(my $fh, ">", $file))
+    {
+	print $fh $params->{input_fasta_data};
 	close($fh);
     }
     else
