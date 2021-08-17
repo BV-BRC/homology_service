@@ -299,6 +299,7 @@ sub process
     # Write output
 
     my %typemap = (json => 'json',
+		   txt => 'txt',
 		   archive => 'unspecified',
 		   tsv => 'tsv');
 
@@ -467,11 +468,67 @@ sub stage_database_fasta_data
 sub stage_database_fasta_file
 {
     my($self, $params, $stage_dir, $blast_params) = @_;
+
+    my $file = "$stage_dir/db_$params->{db_type}.fa";
+    my $ws = Bio::P3::Workspace::WorkspaceClientExt->new;
+
+    if (open(my $fh, ">", $file))
+    {
+
+	$ws->copy_files_to_handles(1, undef, [[$params->{db_fasta_file}, $fh]]);
+
+	close($fh);
+    }
+    else
+    {
+	die "Cannot open $file for writing: $!";
+    }
+
+    my $ok = run(["makeblastdb",
+		  "-dbtype", $makeblastdb_dbtype{$params->{db_type}},
+		  "-in", $file]);
+    $ok or die "makeblastdb failed: $!";
+
+    return $file;
 }
 
 sub stage_database_genome_list
 {
     my($self, $params, $stage_dir, $blast_params) = @_;
+
+    my $genomes = $params->{db_genome_list};
+
+    my $dblist = "$stage_dir/genome-list";
+    open(D, ">", $dblist) or die "Cannot write $dblist: $!";
+    for my $g (@$genomes)
+    {
+	if ($g =~ /^(\d+\.\d+)$/)
+	{
+	    print D "$1\n";
+	    print STDERR "Add genome: $1\n";
+	}
+	else
+	{
+	    die "Invalid genome id $g in genome list";
+	}
+    }
+    close(D);
+    if (! -s $dblist)
+    {
+	die "No genomes written from genome list";
+    }
+
+    my $db = "$stage_dir/genomes";
+    my @cmd = ("p3-make-genome-list-blast-database",
+	       "--ids-from", $dblist,
+	       "--db-type", $params->{db_type},
+	       $db);
+    print STDERR "Run: @cmd\n";
+    
+    my $rc = system(@cmd);
+    $rc == 0 or die "Error creating blast database";
+
+    return $db;
 }
 
 sub stage_database_taxon_list
@@ -583,6 +640,7 @@ sub run_blast
 
     my $out_file = "$work_dir/blast_out.archive";
     my $out_json_file = "$work_dir/blast_out.raw.json";
+    my $out_tbl_file = "$work_dir/blast_out.txt";
     my $out_proc_json_file = "$work_dir/blast_out.json";
     my $out_md_file = "$work_dir/blast_out.metadata.json";
 
@@ -605,6 +663,11 @@ sub run_blast
 	       "-archive", $out_file,
 	       "-outfmt", 15,
 	       "-out", $out_json_file]);
+    $ok or die "Error running blast formatter: $!";
+    my $ok = run(["blast_formatter",
+	       "-archive", $out_file,
+	       "-outfmt", "6 std qlen slen",
+	       "-out", $out_tbl_file]);
     $ok or die "Error running blast formatter: $!";
     my $txt = read_file($out_json_file);
     my($doc, $metadata) = $self->massage_blast_json($txt);
