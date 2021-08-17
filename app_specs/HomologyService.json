@@ -96,6 +96,26 @@
 	    "type": "enum",
 	    "enum": ["blastp", "blastn", "blastx", "tblastn", "tblastx"]
 	},
+	{
+	    "id": "blast_evalue_cutoff",
+	    "label": "BLAST  E-value cutoff",
+	    "required": 0,
+	    "type": "float",
+	    "default": 1e-5
+	},
+	{
+	    "id": "blast_max_hits",
+	    "label": "BLAST max-hits",
+	    "required": 0,
+	    "type": "int",
+	    "default": 10
+	},
+	{
+	    "id": "blast_min_coverage",
+	    "label": "BLAST mininum coverage",
+	    "required": 0,
+	    "type": "int"
+	},
         {
             "id": "output_path",
             "label": "Output Folder",

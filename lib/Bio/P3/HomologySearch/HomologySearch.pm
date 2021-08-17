@@ -651,6 +651,21 @@ sub run_blast
 	 "-out", $out_file,
 	);
 
+    if (exists $params->{blast_evalue_cutoff})
+    {
+	push(@opts, "-evalue", $params->{blast_evalue_cutoff});
+    }
+
+    if (exists $params->{blast_max_hits})
+    {
+	push(@opts, "-max_target_seqs", $params->{blast_max_hits});
+    }
+
+    if (exists $params->{blast_min_coverage})
+    {
+	push(@opts, "-qcov_hsp_perc", $params->{blast_min_coverage});
+    }
+
     my $ok = run([$blast_program, @opts]);
     $ok or die "Error running $blast_program @opts: $!";
 
