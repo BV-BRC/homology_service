@@ -144,7 +144,6 @@ use P3DataAPI;
 use gjoseqlib;
 use strict;
 use Data::Dumper;
-use Data::TreeDumper;
 use POSIX;
 use Cwd;
 use base 'Class::Accessor';
