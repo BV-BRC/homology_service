@@ -118,13 +118,30 @@ if ($opt->dump)
 
 print STDERR "Building database with " . scalar(@$genomes) . " genomes\n";
 
+if (@$genomes == 0)
+{
+    print STDERR "Skipping build of empty list\n";
+    exit 0;
+}
+
 my $dbfile = "$db.$ftype.$type_suffix{$dbtype}";
 my $taxids = "$db.$ftype.$type_suffix{$dbtype}.taxids";
+my $taxlist = "$db.$ftype.$type_suffix{$dbtype}.taxlist";
+my $glist = "$db.$ftype.$type_suffix{$dbtype}.glist";
+
+if (-s $taxids)
+{
+    print STDERR "$taxids already exists, skipping build\n";
+    exit 0;
+}
 
 #open(DB, ">", $dbfile) or die "Cannot write $dbfile: $!";
 #open(TI, ">", $taxids) or die "Cannot write $taxids: $!";
 
 my $sched = LPTScheduler->new($opt->parallel);
+
+open(GL, ">", $glist) or die "Cannot write $glist: $!";
+my %tax;
 
 for my $g (@$genomes)
 {
@@ -134,7 +151,13 @@ for my $g (@$genomes)
 
     $g->{path} = $path;
     $sched->add_work($g, $genome_length);
+    print GL "$genome_id\n";
+    $tax{$taxon_id} = 1;
 }
+close(GL);
+open(TL, ">", $taxlist) or die "Cannot write $taxlist: $!";
+print TL "$_\n" foreach sort { $a <=> $b  } keys %tax;
+close(TL);
 
 my $tmpdir = File::Temp->newdir(CLEANUP => 1);
 my $dbdir = "$tmpdir/db";
@@ -198,7 +221,7 @@ $sched->run($boot, sub {
 	{
 	    if ($rawid =~ /^(\S+)/)
 	    {
-		my $id = "lcl|$1";
+		my $id = "lcl|${genome_id}.$1";
 		
 		if ($seen{$id}++)
 		{
@@ -224,7 +247,17 @@ $sched->run($boot, sub {
 my @taxf = glob("$taxdir/*");
 my @dbf = glob("$dbdir/*");
 my $ok = run(["cat", @taxf], ">", $taxids);
+
 $ok or die "Failure creating $taxids from @taxf\n";
+
+#
+# Check for empty data.
+#
+if (! -s $taxids)
+{
+    print STDERR "Skipping creation of empty database for $dbfile\n";
+    exit 0;
+}
 
 $ok = run(["cat", @dbf],
 	  "|",
@@ -245,11 +278,11 @@ sub compute_path
     
     my $dir = "$genome_base/$genome";
 
-    if (! -d $dir)
-    {
-	warn "No directory $dir\n";
-	return undef;
-    }
+    # if (! -d $dir)
+    # {
+    # 	warn "No directory $dir\n";
+    # 	return undef;
+    # }
 
     if ($ftype eq 'contigs')
     {

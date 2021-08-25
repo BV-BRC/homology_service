@@ -108,7 +108,7 @@
 	    "label": "BLAST max-hits",
 	    "required": 0,
 	    "type": "int",
-	    "default": 10
+	    "default": 300
 	},
 	{
 	    "id": "blast_min_coverage",

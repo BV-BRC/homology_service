@@ -144,6 +144,7 @@ use P3DataAPI;
 use gjoseqlib;
 use strict;
 use Data::Dumper;
+use Data::TreeDumper;
 use POSIX;
 use Cwd;
 use base 'Class::Accessor';
@@ -202,7 +203,7 @@ sub new
 
     my $self = {
 	api => P3DataAPI->new(data_api_url),
-	database_path => ["/vol/bvbrc/blast"],
+	database_path => ["/vol/blastdb/bvbrc-service/by-genus.2"],
 	json => JSON::XS->new->pretty,
     };
 
@@ -223,6 +224,8 @@ sub load_databases
     my $mpath = Module::Metadata->find_module_by_name(__PACKAGE__);
     $mpath = dirname($mpath);
     my $db_path = "$mpath/databases.json";
+
+    $db_path = "bygenus.json";
     eval {
 	my $db_txt = read_file($db_path);
 	$db_txt or die "Cannot load databases from $db_path: $!";
@@ -531,9 +534,152 @@ sub stage_database_genome_list
     return $db;
 }
 
+=head2 stage_database_taxon_list
+
+Handle a request for a list of taxa.
+
+We search the database list for precomputed databases that contain the desired taxa.
+
+The database list is structured as a list of object with two primary properties:
+
+=over 4
+
+=item name
+
+The name of the database
+
+=item db_list
+
+A listing of the BLAST databases that comprise the database, with their properties.
+
+=back
+
+The C<db_list> is the list of available BLAST databases.
+
+Each item has the following properties:
+
+=over 4
+
+=item path
+
+The location in the filesystem of the BLAST database; relative a toplevel path
+defined by the execution environment. 
+
+=item type
+
+The type of the database, as listed above under L<Database types>
+
+=item ftype
+
+Either "features" or "contigs"; this may be redundant.
+
+=item genome_counts
+
+An object mapping the genome id contained in the data to the count
+of sequences with that genome  id.
+
+=item tax_counts
+
+An object mapping the taxon id contained in the data to the count
+of sequences with that taxon id. 
+
+=back
+
+We find the database or databases to use by scanning the tax_counts fields in the available
+database of the correct type for the presence of the desired taxa. 
+
+=cut
+    
 sub stage_database_taxon_list
 {
     my($self, $params, $stage_dir, $blast_params) = @_;
+
+    my $dbtype = $params->{db_type};
+
+    my $db_list = $params->{db_taxon_list};
+    if (!$db_list || ref($db_list) ne 'ARRAY')
+    {
+	die "stage_database_taxon_list: invalid or missing db_taxon_list";
+    }
+
+    my %desired_taxa;
+
+    my $qry = '(' . join(",", @$db_list) . ')';
+    
+    my @res = $self->api->query('genome', ['in', 'taxon_lineage_ids', $qry], ['select', 'genome_id,taxon_id']);
+    print Dumper(\@res);
+    die "stage_database_taxon_list: No taxa found for query $qry" if @res == 0;
+    
+    $desired_taxa{$_->{taxon_id}}++  foreach @res;
+    my @desired_taxa = keys %desired_taxa;
+
+    my @to_search;
+
+    for my $db ($self->databases)
+    {
+	for my $bdb (@{$db->{db_list}})
+	{
+	    if ($bdb->{type} eq $dbtype)
+	    {
+		if (my @c = grep { $bdb->{tax_counts}->{$_}} @desired_taxa)
+		{
+		    push(@to_search, [$bdb, \@c]);
+		    delete $desired_taxa{$_} foreach @c;
+		}
+	    }
+	}
+    }
+    if (@to_search == 0)
+    {
+	die "No taxa were found to search";
+    }
+    elsif (%desired_taxa > 0)
+    {
+	my @d = keys %desired_taxa;
+	warn "Could not find databases for taxa @d\n";
+    }
+
+    #
+    # If there are multiples, construct an alias database.
+    #
+    
+    if (@to_search > 1)
+    {
+	my $alias = $self->work_dir . "/aliasdb";
+	my $files = $self->work_dir . "/dbfiles";
+	open(my $fh, ">", $files) or die "Cannot write $files: $!";
+	my @tax;
+	for my $to (@to_search)
+	{
+	    my($bdb, $taxa) = @$to;
+	    my $p = $self->find_db_in_path($bdb->{path});
+	    push(@tax, @$taxa);
+	    print "aliasing from $p\n";
+	    print $fh "$p\n";
+	}
+	close($fh);
+	my $ok = run(["blastdb_aliastool",
+		      "-dblist_file", $files,
+		      "-dbtype", $makeblastdb_dbtype{$dbtype},
+		      "-title", "combined taxon database",
+		      "-out", $alias]);
+	if (!$ok)
+	{
+	    die "Cannot create alias database for desired taxa @{$params->{db_taxon_list}}\n";
+	}
+
+	push(@$blast_params, "-taxids", join(",", @tax));
+	print Dumper($alias, $blast_params);
+	return $alias;
+    }
+    else
+    {
+	my($bdb, $taxa) = @{$to_search[0]};
+	
+	push(@$blast_params, "-taxids", join(",", @$taxa));
+	
+	return $self->find_db_in_path($bdb->{path});
+    }
 }
 
 sub stage_database_precomputed_database
@@ -666,6 +812,7 @@ sub run_blast
 	push(@opts, "-qcov_hsp_perc", $params->{blast_min_coverage});
     }
 
+    print  "$blast_program @opts\n";
     my $ok = run([$blast_program, @opts]);
     $ok or die "Error running $blast_program @opts: $!";
 
@@ -777,6 +924,10 @@ sub decode_title
 	    $md->{genome_name} = $2;
 	    $md->{genome_id} = $4 if $4;
 	}
+	else
+	{
+	    $desc->{id} = $desc->{title};
+	}
     }
     else
     {
@@ -800,5 +951,23 @@ sub decode_title
     return $md;
 }
 
+sub find_db_in_path
+{
+    my($self, $path) = @_;
+    
+    for my $p (@{$self->{database_path}})
+    {
+	my $file = "$p/$path";
+	for my $suf (qw(pal nal))
+	{
+	    my $chk = "$file.$suf";
+	    if (-f $chk)
+	    {
+		return ($file);
+	    }
+	}
+    }
+    
+}
 
 1;
