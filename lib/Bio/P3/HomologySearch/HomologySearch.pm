@@ -257,6 +257,7 @@ sub preflight
 	runtime => 0,
 	storage => 0,
 	is_control_task => 0,
+	policy_data => { constraint => 'sim' }
     };
     return $pf;
 }
@@ -643,8 +644,8 @@ sub stage_database_taxon_list
     
     if (@to_search > 1)
     {
-	my $alias = $self->work_dir . "/aliasdb";
-	my $files = $self->work_dir . "/dbfiles";
+	my $alias = $self->stage_dir . "/aliasdb";
+	my $files = $self->stage_dir . "/dbfiles";
 	open(my $fh, ">", $files) or die "Cannot write $files: $!";
 	my @tax;
 	for my $to (@to_search)
