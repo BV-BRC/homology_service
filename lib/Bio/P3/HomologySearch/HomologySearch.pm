@@ -224,7 +224,6 @@ sub load_databases
     $mpath = dirname($mpath);
     my $db_path = "$mpath/databases.json";
 
-    $db_path = "bygenus.json";
     eval {
 	my $db_txt = read_file($db_path);
 	$db_txt or die "Cannot load databases from $db_path: $!";
