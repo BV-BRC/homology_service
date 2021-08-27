@@ -202,7 +202,7 @@ sub new
 
     my $self = {
 	api => P3DataAPI->new(data_api_url),
-	database_path => ["/vol/blastdb/bvbrc-service/by-genus.2"],
+	database_path => ["/vol/blastdb/bvbrc-service"],
 	json => JSON::XS->new->pretty,
     };
 
@@ -292,6 +292,11 @@ sub process
 
     my $input_file = $self->stage_input($params, $stage_dir);
     my($db_file, $blast_params) = $self->stage_database($params, $stage_dir);
+
+    if (!$db_file)
+    {
+	die "Unable to find database \n";
+    }
 
     my $blast_program = $self->determine_blast_program($params);
     $self->blast_program($blast_program);
@@ -700,7 +705,8 @@ sub stage_database_precomputed_database
 	    for my $p (@{$self->{database_path}})
 	    {
 		my $file = "$p/$db->{path}";
-		for my $suf (qw(pal nal))
+		print "CHECK $file\n";
+		for my $suf (qw(pal nal psq nsq))
 		{
 		    my $chk = "$file.$suf";
 		    if (-f $chk)
