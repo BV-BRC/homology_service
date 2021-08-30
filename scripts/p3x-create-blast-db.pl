@@ -246,6 +246,12 @@ $sched->run($boot, sub {
 
 my @taxf = glob("$taxdir/*");
 my @dbf = glob("$dbdir/*");
+
+if (@taxf == 0)
+{
+    warn "No taxids found for $dbfile\n";
+    exit 0;
+}
 my $ok = run(["cat", @taxf], ">", $taxids);
 
 $ok or die "Failure creating $taxids from @taxf\n";
