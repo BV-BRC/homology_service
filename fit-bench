@@ -1,0 +1,65 @@
+use Data::Dumper;
+use strict;
+use Statistics::LineFit;
+use gjoseqlib;
+
+@ARGV == 1 or @ARGV == 2 or die "Usage: $0 bench-out [fasta]\n";
+
+my $bench = shift;
+my $fasta = shift;
+
+my %n_repeats;
+my %repeat_chars;
+
+if ($fasta)
+{
+    open(FA, "<", $fasta) or die "cannot open $fasta: $!";
+    while (my($id, $def, $seq) = read_next_fasta_seq(\*FA))
+    {
+	my @rpt;
+	my $chars = 0;
+	while ($seq =~ /(([A-Z])\2\2\2+)/g)
+	{
+	    $chars += length($1);
+	    push(@rpt, $1);
+	}
+	$n_repeats{$id} = scalar @rpt;
+	$repeat_chars{$id} = $chars;
+    }
+    close(FA);
+}
+
+open(B, "<", $bench) or die "cannot open $bench: $!";
+
+my(@xValues, @yValues);
+
+while (<B>)
+{
+    next if /gnl/;
+    chomp;
+    my($fid, $size, $time) = split(/\t/);
+    push(@xValues, $size);
+    push(@yValues, $time);
+}
+close(B);
+
+my $lineFit = Statistics::LineFit->new();
+$lineFit->setData (\@xValues, \@yValues) or die "Invalid data";
+my($intercept, $slope) = $lineFit->coefficients();
+defined $intercept or die "Can't fit line if x values are all equal";
+my $rSquared = $lineFit->rSquared();
+
+printf "Fit with %.2f: time = %.6f * size + %.2f\n", $rSquared, $slope, $intercept;
+
+open(B, "<", $bench) or die "cannot open $bench: $!";
+
+while (<B>)
+{
+    next if /gnl/;
+    chomp;
+    my($id, $size, $time) = split(/\t/);
+    my $predicted = $slope * $size + $intercept;
+    my $error = $time - $predicted;
+    my $dist = abs($slope * $size - $time + $intercept) / sqrt($slope * $slope + 1);
+    printf("%s\t%.1f\t%.1f\t%.4f\t%.4f\t%d\t%d\n", $id, $time, $predicted, $error, $dist, $n_repeats{$id}, $repeat_chars{$id});
+}

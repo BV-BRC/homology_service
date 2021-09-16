@@ -16,6 +16,7 @@ BLAST_BASE = ncbi-blast-$(BLAST_VERSION)+
 BLAST_FTP_SRC = ftp://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/$(BLAST_VERSION)/$(BLAST_BASE)-x64-linux.tar.gz
 BLAST_FTP_FILE = $(notdir $(BLAST_FTP_SRC))
 BLAST_DEPLOY_DIR = $(TARGET)/services/$(SERVICE)/bin
+BLAST_DB_SEARCH_PATH = /vol/blastdb/bvbrc-service
 
 SERVICE_MODULE = lib/Bio/KBase/HomologyService/Service.pm
 
@@ -50,11 +51,12 @@ TPAGE_ARGS = --define kb_top=$(TARGET) \
 	--define kb_psgi=$(SERVICE_PSGI_FILE) \
 	--define kb_async_service_port=$(ASYNC_SERVICE_PORT) \
 	--define kb_async_psgi=$(ASYNC_SERVICE_PSGI) \
+	--define blast_db_search_path=$(BLAST_DB_SEARCH_PATH) \
 	$(TPAGE_TEMPDIR)
 
 TESTS = $(wildcard t/client-tests/*.t)
 
-all: bin compile-typespec service
+all: build-libs bin compile-typespec service
 
 test:
 	# run each test
@@ -94,8 +96,10 @@ bin: $(BIN_PERL) $(BIN_SERVICE_PERL)
 
 deploy: deploy-client deploy-service
 deploy-all: deploy-client deploy-service
-deploy-client: compile-typespec deploy-docs deploy-libs deploy-scripts 
+deploy-client: build-libs compile-typespec deploy-docs deploy-libs deploy-scripts 
 
+build-libs:
+	$(TPAGE) $(TPAGE_BUILD_ARGS) $(TPAGE_ARGS) Config.pm.tt > lib/Bio/P3/HomologySearch/Config.pm
 
 deploy-service: deploy-dir deploy-libs deploy-service-scripts deploy-blast deploy-specs
 	$(TPAGE) $(TPAGE_ARGS) service/start_service.tt > $(TARGET)/services/$(SERVICE)/start_service

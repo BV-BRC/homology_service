@@ -1,0 +1,9 @@
+package Bio::P3::HomologySearch::Config;
+
+use constant	    blast_db_search_path => ['[% blast_db_search_path %]'];
+
+use base 'Exporter';
+our @EXPORT_OK = qw(blast_db_search_path);
+our %EXPORT_TAGS = (all => [@EXPORT_OK]);
+1;
+

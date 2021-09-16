@@ -140,6 +140,9 @@ A database of all the reference and representative genomes in the bacterial and 
 
 package Bio::P3::HomologySearch::HomologySearch;
 
+use Bio::P3::HomologySearch::Config qw(blast_db_search_path);
+use Bio::P3::HomologySearch::BlastDatabases;
+
 use P3DataAPI;
 use gjoseqlib;
 use strict;
@@ -170,6 +173,7 @@ __PACKAGE__->mk_accessors(qw(app app_def params token task_id
 			     output_base output_folder 
 			     contigs app_params  api
 			     database_path
+			     blastdbs
 			     json
 			    ));
 
@@ -200,61 +204,74 @@ sub new
 {
     my($class) = @_;
 
+    my $api = P3DataAPI->new(data_api_url);
     my $self = {
-	api => P3DataAPI->new(data_api_url),
+	api => $api,
 	database_path => ["/vol/blastdb/bvbrc-service"],
 	json => JSON::XS->new->pretty,
+ 	blastdbs => Bio::P3::HomologySearch::BlastDatabases->new(blast_db_search_path, $api),
     };
 
     bless $self, $class;
 
-    $self->load_databases();
-
     return $self;
 }
 
-sub load_databases
-{
-    my($self) = @_;
-    #
-    # Open databases file and load.
-    #
+=head2 preflight
 
-    my $mpath = Module::Metadata->find_module_by_name(__PACKAGE__);
-    $mpath = dirname($mpath);
-    my $db_path = "$mpath/databases.json";
+Compute CPU & estimated time.
 
-    eval {
-	my $db_txt = read_file($db_path);
-	$db_txt or die "Cannot load databases from $db_path: $!";
-	$self->databases(decode_json($db_txt));
-    };
-    if ($@)
-    {
-	die "Failure loading database file $db_path: $@";
-    }
-}
+We make really gross general estimates on the runtime here by computing the size in bases
+of the input (we can do this fairly accurately since we're pulling input from immediate data
+or from files which we can do a C<stat()> on to get size from.
 
-sub databases
-{
-    my($self, $val) = @_;
-    if (defined($val))
-    {
-	$self->{databases} = $val;
-    }
-    return wantarray ? @{$self->{databases}} : $self->{databases};
-}
+We also make an coarser estimate on the database size; we can get a good estimate if
+immediate input is specified (fasta data or a file). However, if a taxon list or
+genome list is specfied this is tricker. For a genome list we just make an estimate based
+on average genome sizes. For a taxon list, we do a lookup to find the blast database files
+and compute based on that. (This size data should get pushed into data in C<database.json>.
+Next time 'round.)
+
+=cut
 
 sub preflight
 {
-    my($app, $app_def, $raw_params, $params) = @_;
+    my($self, $app, $app_def, $raw_params, $params) = @_;
 
-    my $cpu = 8;
+    my($inp_type, $inp_size_est) = $self->compute_input_preflight($app, $params);
+    my($db_type, $db_size_est) = $self->compute_db_preflight($app, $params);
+
+    my $blast = $self->determine_blast_program($params);
+
+    print "PF inp $inp_type $inp_size_est\n";
+    print "PF db  $db_type $db_size_est\n";
+
+    my $time;
+    if ($db_size_est < 10_000)
+    {
+	$time = 1 * 60;
+    }
+    elsif ($db_size_est < 100_000)
+    {
+	$time = 5 * 60;
+    }
+    else
+    {
+	$time = 10 * 60;
+    }
+    my $inp_factor = ceil($inp_size_est / 1_000);
+
+    $time *= $inp_factor;
+    $time *= 6 if $blast eq 'tblastn' || $blast eq 'tblastx';
+    
+    my $cpu = 4;
+
+    $cpu = 8 if $db_size_est > 1_000_000;
 
     my $pf = {
 	cpu => $cpu,
-	memory => "16G",
-	runtime => 0,
+	memory => "32G",
+	runtime => $time,
 	storage => 0,
 	is_control_task => 0,
 	policy_data => { constraint => 'sim' }
@@ -271,8 +288,6 @@ sub process
     $self->params($params);
     $self->token($app->token);
     $self->task_id($app->task_id);
-
-    print "Process homology search ", Dumper($app_def, $raw_params, $params);
 
     my $cwd = getcwd();
     my $work_dir = "$cwd/work";
@@ -606,62 +621,41 @@ sub stage_database_taxon_list
 	die "stage_database_taxon_list: invalid or missing db_taxon_list";
     }
 
-    my %desired_taxa;
+    my($taxa, $file_list) = $self->blastdbs->find_databases_for_taxa($dbtype, $db_list);
 
-    my $qry = '(' . join(",", @$db_list) . ')';
-    
-    my @res = $self->api->query('genome', ['in', 'taxon_lineage_ids', $qry], ['select', 'genome_id,taxon_id']);
-    print Dumper(\@res);
-    die "stage_database_taxon_list: No taxa found for query $qry" if @res == 0;
-    
-    $desired_taxa{$_->{taxon_id}}++  foreach @res;
-    my @desired_taxa = keys %desired_taxa;
-
-    my @to_search;
-
-    for my $db ($self->databases)
-    {
-	for my $bdb (@{$db->{db_list}})
-	{
-	    if ($bdb->{type} eq $dbtype)
-	    {
-		if (my @c = grep { $bdb->{tax_counts}->{$_}} @desired_taxa)
-		{
-		    push(@to_search, [$bdb, \@c]);
-		    delete $desired_taxa{$_} foreach @c;
-		}
-	    }
-	}
-    }
-    if (@to_search == 0)
+    if (!$taxa)
     {
 	die "No taxa were found to search";
     }
-    elsif (%desired_taxa > 0)
+
+    if (@$taxa > 10)
     {
-	my @d = keys %desired_taxa;
-	warn "Could not find databases for taxa @d\n";
+	my $tlist = $self->stage_dir . "/taxids";
+
+	open(T, ">", $tlist) or die "Cannot write $tlist: $!";
+	print T "$_\n" foreach @$taxa;
+	close(T);
+	
+	push(@$blast_params, "-taxidlist", $tlist);
+    }
+    else
+    {
+	push(@$blast_params, "-taxids", join(",", @$taxa));
     }
 
     #
     # If there are multiples, construct an alias database.
     #
     
-    if (@to_search > 1)
+    if (@$file_list > 1)
     {
 	my $alias = $self->stage_dir . "/aliasdb";
 	my $files = $self->stage_dir . "/dbfiles";
+
 	open(my $fh, ">", $files) or die "Cannot write $files: $!";
-	my @tax;
-	for my $to (@to_search)
-	{
-	    my($bdb, $taxa) = @$to;
-	    my $p = $self->find_db_in_path($bdb->{path});
-	    push(@tax, @$taxa);
-	    print "aliasing from $p\n";
-	    print $fh "$p\n";
-	}
+	print $fh "$_\n" foreach @$file_list;
 	close($fh);
+	
 	my $ok = run(["blastdb_aliastool",
 		      "-dblist_file", $files,
 		      "-dbtype", $makeblastdb_dbtype{$dbtype},
@@ -672,17 +666,11 @@ sub stage_database_taxon_list
 	    die "Cannot create alias database for desired taxa @{$params->{db_taxon_list}}\n";
 	}
 
-	push(@$blast_params, "-taxids", join(",", @tax));
-	print Dumper($alias, $blast_params);
 	return $alias;
     }
     else
     {
-	my($bdb, $taxa) = @{$to_search[0]};
-	
-	push(@$blast_params, "-taxids", join(",", @$taxa));
-	
-	return $self->find_db_in_path($bdb->{path});
+	return $file_list->[0];
     }
 }
 
@@ -691,33 +679,9 @@ sub stage_database_precomputed_database
     my($self, $params, $stage_dir, $blast_params) = @_;
 
     my $db = $params->{db_precomputed_database};
-    defined($db) or die "Precomputed database was select but db_precomputed_database key was missing from parameters";
-    my @cands = grep { $_->{name} eq $db } $self->databases;
-    if (@cands == 0)
-    {
-	die "Cannot find precomputed database $db\n";
-    }
+    defined($db) or die "Precomputed database was selected but db_precomputed_database key was missing from parameters";
 
-    for my $cand (@cands)
-    {
-	for my $db (grep { $_->{type} eq $params->{db_type} } @{$cand->{db_list}})
-	{
-	    for my $p (@{$self->{database_path}})
-	    {
-		my $file = "$p/$db->{path}";
-		print "CHECK $file\n";
-		for my $suf (qw(pal nal psq nsq))
-		{
-		    my $chk = "$file.$suf";
-		    if (-f $chk)
-		    {
-			return ($file);
-		    }
-		}
-	    }
-	}
-    }
-    return undef;
+    return $self->blastdbs->find_precomputed_database($db, $params->{db_type});
 }
 
 sub read_and_validate_fasta
@@ -963,7 +927,7 @@ sub find_db_in_path
     for my $p (@{$self->{database_path}})
     {
 	my $file = "$p/$path";
-	for my $suf (qw(pal nal))
+	for my $suf (qw(pal nal psq nsq))
 	{
 	    my $chk = "$file.$suf";
 	    if (-f $chk)
@@ -974,5 +938,107 @@ sub find_db_in_path
     }
     
 }
+
+sub compute_input_preflight
+{
+    my($self, $app, $params) = @_;
+    # ret   my($inp_type, $inp_size_est)
+
+    my $inp_type = $params->{input_type};
+
+    my $src = $params->{input_source};
+    my $sz;
+    if ($src eq 'id_list')
+    {
+	$sz = @{$params->{input_id_list}} * 1000;
+	$sz *= 3 if $inp_type eq 'dna';
+    }
+    elsif ($src eq 'fasta_data')
+    {
+	$sz = length($params->{input_fasta_data});
+    }
+    elsif ($src eq 'fasta_file')
+    {
+	my $ws = $app->workspace();
+	my $stat = $ws->stat($params->{input_fasta_file});
+	if ($stat)
+	{
+	    $sz = $stat->size;
+	}
+	else
+	{
+	    die "Input file $params->{input_fasta_file} not found\n";
+	}
+    }
+    else
+    {
+	die "Invalid input type $src\n";
+    }
+
+    return($inp_type, $sz);
+
+}
+
+
+sub compute_db_preflight
+{
+    my($self, $app, $params) = @_;
+
+    my $db_type = $params->{db_type};
+    my $db_src  = $params->{db_source};
+
+    my $sz;
+
+    if ($db_src eq 'fasta_data')
+    {
+	$sz = length($params->{db_fasta_data});
+    }
+    elsif ($db_src eq 'fasta_file')
+    {
+	my $ws = $app->workspace();
+	my $stat = $ws->stat($params->{db_fasta_file});
+	if ($stat)
+	{
+	    $sz = $stat->size;
+	}
+	else
+	{
+	    die "Database file $params->{db_fasta_file} not found\n";
+	}
+    }
+    elsif ($db_src eq 'genome_list')
+    {
+	$sz = 1000000;
+	$sz *= 3 if $db_type ne 'faa';
+    }
+    elsif ($db_src eq 'taxon_list')
+    {
+	my($taxa, $file_list) = $self->blastdbs->find_databases_for_taxa($db_type, $params->{db_taxon_list});
+	for my $f (@$file_list)
+	{
+	    for my $bf (glob("$f*[pn]sq"))
+	    {
+		$sz += -s $bf;
+	    }
+	}
+    }
+    elsif ($db_src eq 'precomputed_database')
+    {
+	my $f = $self->blastdbs->find_precomputed_database($params->{db_precomputed_database}, $db_type);
+	for my $bf (glob("$f*[pn]sq"))
+	{
+	    my $fsize = -s $bf;
+	    $sz += $fsize;
+	}
+    }
+    else
+    {
+	die "Unknown database source $db_src\n";
+    }
+
+    return($db_type, $sz);
+}
+
+
 
 1;
