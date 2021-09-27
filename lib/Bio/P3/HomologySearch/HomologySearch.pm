@@ -154,7 +154,7 @@ use gjoseqlib;
 use JSON::XS;
 use Module::Metadata;
 use List::Util qw(any none);
-use IPC::Run qw(run);
+use IPC::Run qw(run start finish);
 use File::Basename;
 use File::Copy qw(copy);
 use File::Path qw(make_path remove_tree);
@@ -756,6 +756,7 @@ sub run_blast
     my $out_file = "$work_dir/blast_out.archive";
     my $out_json_file = "$work_dir/blast_out.raw.json";
     my $out_tbl_file = "$work_dir/blast_out.txt";
+    my $out_tbl_hdrs = "$work_dir/blast_headers.txt";
     my $out_proc_json_file = "$work_dir/blast_out.json";
     my $out_md_file = "$work_dir/blast_out.metadata.json";
 
@@ -795,11 +796,35 @@ sub run_blast
 	       "-outfmt", 15,
 	       "-out", $out_json_file]);
     $ok or die "Error running blast formatter: $!";
-    my $ok = run(["blast_formatter",
-	       "-archive", $out_file,
-	       "-outfmt", "6 std qlen slen",
-	       "-out", $out_tbl_file]);
-    $ok or die "Error running blast formatter: $!";
+
+    #
+    # Create tabular output; we need to filter to remove gnl| from the ids.
+    #
+    my @cols = qw(qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore qlen slen);
+
+    write_file($out_tbl_hdrs, join("\t", @cols) . "\n");
+
+    my $tbl_fh;
+    my $pipe = IO::Handle->new;
+    
+    open($tbl_fh, ">", $out_tbl_file) or die "Cannot write $out_tbl_file: $!";
+    my $h = start(["blast_formatter",
+		   "-archive", $out_file,
+		   "-outfmt", join(" ", 6, @cols)],
+		  ">pipe", $pipe);
+    $h or die "Error running blast formatter: $!";
+
+    while (<$pipe>)
+    {
+	s/^([^\t]+\t)gnl\|/$1/;
+	print $tbl_fh $_;
+    }
+
+    finish($h) or die "returned: $?";
+    
+    close($pipe);
+    close($tbl_fh);
+
     my $txt = read_file($out_json_file);
     my($doc, $metadata) = $self->massage_blast_json($txt);
     write_file($out_proc_json_file, $self->json->encode($doc));
