@@ -263,6 +263,14 @@ sub preflight
 
     $time *= $inp_factor;
     $time *= 6 if $blast eq 'tblastn' || $blast eq 'tblastx';
+
+    #
+    # Require at least 5 minutes. If this run triggers the download of a new
+    # container we will run out of time.
+    #
+    my $min_time = 5 * 60;
+    
+    $time = $min_time if $time < $min_time;
     
     my $cpu = 4;
 
