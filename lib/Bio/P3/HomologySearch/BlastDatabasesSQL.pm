@@ -1,13 +1,13 @@
 
 =head1 NAME
 
-BlastDatabases - wrapper for precomputed BLAST databases
+BlastDatabasesSQL - wrapper for precomputed BLAST databases
 
 =head1 DESCRIPTION
 
-This class is used to wrap the JSON description of the precomputed
+This class is used to wrap the SQLite3 database of the precomputed
 BLAST databases as generated with L<p3x-create-blast-db> and summarized
-in the databases.json file by L<p3x-create-databases-lookup>.
+in a SQLite3 database by L<p3x-create-databases-lookup>.
 
 It provides methods to expand databases from name and type to
 the database path, and to search the set of precomputed databases
@@ -20,9 +20,10 @@ for matches based on taxon id or genome id.
 =cut
 
 
-package Bio::P3::HomologySearch::BlastDatabases;
+package Bio::P3::HomologySearch::BlastDatabasesSQL;
 
 use strict;
+use Data::Dumper;
 use File::Basename;
 use Module::Metadata;
 use File::Slurp;
@@ -30,11 +31,11 @@ use JSON::XS;
 use P3DataAPI;
 
 use base 'Class::Accessor';
-__PACKAGE__->mk_accessors(qw(api search_path));
+__PACKAGE__->mk_accessors(qw(api search_path db_file dbh));
 
 =item B<Constructor>
 
-    $db = Bio::P3::HomologySearch::BlastDatabases->new($search_path)
+    $db = Bio::P3::HomologySearch::BlastDatabasesSQL->new($search_path)
 
 Create a new BlastDatabases object. C<$search_path> is a list of
 base directories for the BLAST database files.
@@ -43,49 +44,36 @@ base directories for the BLAST database files.
 
 sub new
 {
-    my($class, $search_path, $data_api) = @_;
+    my($class, $search_path, $db_file, $data_api) = @_;
 
     $data_api //= P3DataAPI->new();
 
     my $self = {
-	search_path => $search_path,
-	api => $data_api
+	search_path => (ref($search_path) ? $search_path : [$search_path]),,
+	api => $data_api,
+	db_file => $db_file,
     };
+
+    my $dbh = DBI->connect("dbi:SQLite:$db_file", undef, undef, {
+	AutoCommit => 1,	     
+	RaiseError => 1,	     
+    });	
+
+    $dbh->do("PRAGMA foreign_keys = ON");
+
+    $self->{dbh} = $dbh;
+    
     bless $self, $class;
-    $self->load_databases();
     return $self;
-}
-
-sub load_databases
-{
-    my($self) = @_;
-    #
-    # Open databases file and load.
-    #
-
-    my $mpath = Module::Metadata->find_module_by_name(__PACKAGE__);
-    $mpath = dirname($mpath);
-    my $db_path = "$mpath/databases.json";
-
-    eval {
-	my $db_txt = read_file($db_path);
-	$db_txt or die "Cannot load databases from $db_path: $!";
-	$self->databases(decode_json($db_txt));
-    };
-    if ($@)
-    {
-	die "Failure loading database file $db_path: $@";
-    }
 }
 
 sub databases
 {
-    my($self, $val) = @_;
-    if (defined($val))
-    {
-	$self->{databases} = $val;
-    }
-    return wantarray ? @{$self->{databases}} : $self->{databases};
+    my($self) = @_;
+
+    my $res = $self->dbh->selectcol_arrayref(qq(SELECT name FROM GenomeGroup WHERE curated));
+    
+    return wantarray ? @$res : $res;
 }
 
 =item B<search_taxa>
@@ -104,32 +92,54 @@ sub search_taxa
 
     my %desired_taxa = map { $_ => 1 } @$taxa;
 
-    my @to_search;
+    my @qry;
+    my @params;
 
-    for my $db ($self->databases)
+    push(@qry, "l.lineage_id IN (" . join(", ", map { "?" } @$taxa) . ")");
+    push(@params, @$taxa);
+
+    push(@qry, "t.suffix = ?");
+    push(@params, $dbtype);
+
+    #
+    # Don't pull in curated databases here, since they will replicate
+    # taxa (and the non-curated ones are more complete)
+    #
+    push(@qry, 'NOT g.curated');
+
+    my $where = join(" AND ", @qry);
+
+    my $qry = qq(SELECT DISTINCT b.path, d.taxon_id
+		 FROM TaxonLineage l JOIN TaxonInDatabase d ON d.taxon_id = l.taxon_id
+		 JOIN BlastDatabase b ON b.id = d.blast_database
+		 JOIN DbType t ON t.id = b.dbtype
+		 JOIN GenomeGroup g on g.id = b.genome_group
+		 WHERE $where);
+
+    print "$qry\n";
+    my $res = $self->dbh->selectall_arrayref($qry, undef, @params);
+
+    my %dbs;
+
+    for my $ent (@$res)
     {
-	for my $bdb (@{$db->{db_list}})
-	{
-	    if ($bdb->{type} eq $dbtype)
-	    {
-		if (my @c = grep { $bdb->{tax_counts}->{$_}} keys %desired_taxa)
-		{
-		    push(@to_search, [$bdb, \@c]);
-		    delete $desired_taxa{$_} foreach @c;
-		}
-	    }
-	}
+	my($path, $tax) = @$ent;
+	push @{$dbs{$path}}, $tax;
     }
+
+    my @to_search;
+    while (my($path, $list) = each %dbs)
+    {
+	delete $desired_taxa{$_} foreach @$list;
+	push(@to_search, [$path, $list]);
+    }
+    
     return (\@to_search, [keys %desired_taxa]);
 }
 
 =item B<find_databases_for_taxa>
 
     ($taxa, $files) = $db->find_databases_for_taxa($dbtype, $taxa)
-
-Given a list of taxa, search the Solr database for all taxa that include the given
-taxa in their lineage (effectively enumerating the taxonomy tree beneath the requested
-taxa).
 
 Determine the set of precomputed databases that cover those taxa, and the ids within that
 are to be specified in the blast invocation.
@@ -140,9 +150,7 @@ sub find_databases_for_taxa
 {
     my($self, $dbtype, $taxa) = @_;
 
-    my $expanded_taxa = $self->expand_taxa($taxa);
-
-    my($to_search, $missing) = $self->search_taxa($dbtype, $expanded_taxa);
+    my($to_search, $missing) = $self->search_taxa($dbtype, $taxa);
 
     if (@$to_search == 0)
     {
@@ -153,24 +161,24 @@ sub find_databases_for_taxa
 	warn "Could not find databases for taxa @$missing\n";
     }
 
-    my @taxa;
+    my %taxa;
     my @files;
     for my $to (@$to_search)
     {
-	my($bdb, $taxa) = @$to;
-	my $p = $self->find_db_in_path($bdb->{path});
+	my($path, $taxa) = @$to;
+	my $p = $self->find_db_in_path($path);
 	if ($p)
 	{
-	    push(@taxa, @$taxa);
+	    $taxa{$_} = 1 foreach @$taxa;
 	    push(@files, $p);
 	}
 	else
 	{
-	    warn "Could not find database $bdb->{path}\n";
+	    warn "Could not find database $path\n";
 	}
     }
 
-    return(\@taxa, \@files);
+    return([keys %taxa], \@files);
 }
 
 =item B<expand_taxa>
@@ -214,25 +222,16 @@ sub find_precomputed_database
 {
     my($self, $name, $type) = @_;
 
-    my @cands = grep { $_->{name} eq $name } $self->databases;
-    for my $cand (@cands)
+    my $res = $self->dbh->selectcol_arrayref(qq(SELECT b.path
+						FROM GenomeGroup g JOIN BlastDatabase b ON g.id = b.genome_group
+						JOIN DbType d ON d.id = b.dbtype
+						WHERE g.name = ? AND d.suffix = ?), undef,
+					     $name, $type);
+
+    for my $path (@$res)
     {
-	for my $db (grep { $_->{type} eq $type } @{$cand->{db_list}})
-	{
-	    for my $p (@{$self->{search_path}})
-	    {
-		my $file = "$p/$db->{path}";
-		# print STDERR "CHECK $file\n";
-		for my $suf (qw(pal nal psq nsq))
-		{
-		    my $chk = "$file.$suf";
-		    if (-f $chk)
-		    {
-			return ($file);
-		    }
-		}
-	    }
-	}
+	my $db_path = $self->find_db_in_path($path);
+	return $db_path if $db_path;
     }
 
     return undef;

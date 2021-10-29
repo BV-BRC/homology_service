@@ -140,8 +140,9 @@ A database of all the reference and representative genomes in the bacterial and 
 
 package Bio::P3::HomologySearch::HomologySearch;
 
-use Bio::P3::HomologySearch::Config qw(blast_db_search_path);
+use Bio::P3::HomologySearch::Config qw(blast_db_search_path blast_sqlite_db);
 use Bio::P3::HomologySearch::BlastDatabases;
+use Bio::P3::HomologySearch::BlastDatabasesSQL;
 
 use P3DataAPI;
 use gjoseqlib;
@@ -169,6 +170,7 @@ use File::Slurp;
 
 __PACKAGE__->mk_accessors(qw(app app_def params token task_id
 			     blast_program blast_params
+			     blast_sqlite_db
 			     work_dir stage_dir
 			     output_base output_folder 
 			     contigs app_params  api
@@ -207,10 +209,22 @@ sub new
     my $api = P3DataAPI->new(data_api_url);
     my $self = {
 	api => $api,
-	database_path => ["/vol/blastdb/bvbrc-service"],
+	database_path => blast_db_search_path,
 	json => JSON::XS->new->pretty,
- 	blastdbs => Bio::P3::HomologySearch::BlastDatabases->new(blast_db_search_path, $api),
+ 	blastdbs => 
     };
+
+    $self->{blast_sqlite_db} = blast_sqlite_db;
+
+    if ($self->{blast_sqlite_db})
+    {
+	$self->{blastdbs} = Bio::P3::HomologySearch::BlastDatabasesSQL->new(blast_db_search_path,
+									    $self->{blast_sqlite_db}, $api);
+    }
+    else
+    {
+	$self->{blastdbs} = Bio::P3::HomologySearch::BlastDatabases->new(blast_db_search_path, $api);
+    }
 
     bless $self, $class;
 

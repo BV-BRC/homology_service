@@ -9,8 +9,12 @@ use Getopt::Long::Descriptive;
 use LPTScheduler;
 
 my($opt, $usage) = describe_options("%c %o dbtype ftype output-dir",
+				    ['dbtype is either "aa" or "dna"'],
+				    ['ftype is either "features" or "contigs"'],
+				    [],
 				    ["n-build-threads=i", "Number of parallel builds to run", { default => 6 }],
 				    ["n-db-threads=i", "Number of database lookup threads to run inside each build", { default => 2}],
+				    ["viral", "Build for viral families"],
 				    ["all-genera", "Build for all genera instead of selected pathogens"],
 				    ["check-size!", "Check the genus size to schedule work", { default => 1 }], 
 				    ["help|h", "Show this help message"]);
@@ -77,11 +81,44 @@ if ($opt->all_genera)
     #
     # Clear the hardcoded list of genera and build for all.
     #
+    # Note that if --viral was provided we build for viral families
+    # (in which case %genera isn't the correct name but we are leaving it for now).
+    #
 
     %genera = ();
 
     my $api = P3DataAPI->new();
-    my @genera = $api->query('taxonomy', ['eq', 'division', 'Bacteria'], ['eq', 'taxon_rank', 'genus'], ['select', 'taxon_id,taxon_name']);
+
+    my @genera;
+    if ($opt->viral)
+    {
+	@genera = $api->query('taxonomy',
+			      ['eq', 'lineage_names', 'Viruses'],
+			      ['eq', 'taxon_rank', 'family'],
+			      ['select', 'taxon_id,taxon_name,lineage_names']);
+
+	#
+	# Make sure we didn't pick up any stray taxa with the nonspecific match for Viruses above
+	#
+	@genera = grep { $_->{lineage_names}->[0] eq 'Viruses'} @genera;
+
+	#
+	# Testing subset.
+	#
+	if (0)
+	{
+	    my @fams = qw(Flaviviridae Herpesviridae Drexlerviridae);
+	    my %fams = map { $_ => 1 } @fams;
+	    @genera = grep { $fams{$_->{taxon_name} } } @genera;
+	}
+    }
+    else
+    {
+	@genera = $api->query('taxonomy',
+			      ['eq', 'division', 'Bacteria'],
+			      ['eq', 'taxon_rank', 'genus'],
+			      ['select', 'taxon_id,taxon_name']);
+    }
     for my $ent (@genera)
     {
 	my($taxon_id, $taxon_name) = @$ent{qw(taxon_id taxon_name)};
@@ -97,11 +134,33 @@ if ($opt->all_genera)
 my @all;
 my @exclude;
 
+#
+# Disable quality check for viral genomes.
+# Also determine the catchall taxon id.
+#
+my @create_options;
+my $catchall_taxon;
+if ($opt->viral)
+{
+    push(@create_options,
+	 "--no-quality-check",
+	 "--no-check-files",
+	 "--batch-size", 500,
+	);
+    $catchall_taxon = 10239;
+}
+else
+{
+    $catchall_taxon = 2;
+}
+    
+
 for my $genus (sort keys %genera)
 {
     my $tax = $genera{$genus};
     my $dat;
-    my $create_params = ["--tax", $tax];
+    my $create_params = ["--tax", $tax, @create_options];
+
 
     my $sz = 1;
     my $glist = [];
@@ -112,7 +171,7 @@ for my $genus (sort keys %genera)
 	my @cmd = ("p3x-create-blast-db",
 		   "--dump",
 		   @$create_params);
-	#    print STDERR "@cmd\n";
+	print STDERR "@cmd\n";
 	run(\@cmd, ">", \$dat);
 	eval {
 	    $glist = $json->decode($dat);
@@ -138,28 +197,33 @@ for my $genus (sort keys %genera)
 
 my $dat;
 
-my $create_params = [(map { ("--exclude", $_) } @exclude),
-		     "--tax", 2];
-
-my @cmd = ("p3x-create-blast-db",
-	   "--dump",
-	   @$create_params,
-	   );
-# print STDERR "@cmd\n";
-run(\@cmd, ">", \$dat);
-my $glist = $json->decode($dat);
-my $sz = 0;
-$sz += $_->{genome_length} foreach @$glist;
-$sz /= 1e6;
 if ($build_other)
 {
-    my $item = { genus => 'OTHER', tax => undef, size => $sz, list => $glist, params => $create_params };
-    push(@all, $item);
-    $sched->add_work($item, $sz);
-}
-my $n = @$glist;
+    my $create_params = [(map { ("--exclude", $_) } @exclude),
+			 @create_options,
+			 "--tax", $catchall_taxon];
+    
+    my @cmd = ("p3x-create-blast-db",
+	       "--dump",
+	       @$create_params,
+	      );
+    # print STDERR "@cmd\n";
+    run(\@cmd, ">", \$dat);
+    my $glist = $json->decode($dat);
+    my $sz = 0;
+    $sz += $_->{genome_length} foreach @$glist;
 
-print STDERR "OTHER\t\t$n\t$sz\n";
+    if ($build_other)
+    {
+	my $item = { genus => 'OTHER', tax => undef, size => $sz, list => $glist, params => $create_params };
+	push(@all, $item);
+	$sched->add_work($item, $sz);
+    }
+    my $n = @$glist;
+    
+    print STDERR "OTHER\t\t$n\t$sz\n";
+}
+
 # print $json->encode(\@all);
 
 $sched->run(sub {}, sub {
@@ -169,11 +233,17 @@ $sched->run(sub {}, sub {
 
     print STDERR "Run $$ $genus $tax @$params\n";
 
+    my @nr;
+    if ($opt->viral)
+    {
+	# @nr = ("--create-nr");
+    }
     my $db = "$out_dir/$genus";
     my @cmd = ("p3x-create-blast-db",
 	       @$params,
 	       "--title", $genus,
 	       "--parallel", $n_build_procs,
+	       @nr,
 	       $dbtype, $ftype, $db);
     print "@cmd\n";
     my $ok = run(\@cmd,

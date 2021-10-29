@@ -52,6 +52,7 @@ TPAGE_ARGS = --define kb_top=$(TARGET) \
 	--define kb_async_service_port=$(ASYNC_SERVICE_PORT) \
 	--define kb_async_psgi=$(ASYNC_SERVICE_PSGI) \
 	--define blast_db_search_path=$(BLAST_DB_SEARCH_PATH) \
+	--define blast_sqlite_db=$(BLAST_SQLITE_DB) \
 	$(TPAGE_TEMPDIR)
 
 TESTS = $(wildcard t/client-tests/*.t)
