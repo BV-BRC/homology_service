@@ -72,6 +72,11 @@ Use the sequence data from the parameter C<input_fasta_data>.
 
 Use the sequence data from the workspace file at path C<input_fasta_file>.
 
+=item feature_group
+
+Use a set of sequences from the PATRIC database named by the identifiers in the feature group
+whose path is defined by the parameter C<input_feature_group>.
+    
 =back
 
 =head2 Specifying search database
@@ -385,6 +390,29 @@ sub stage_input_id_list
 	die "Input source defined as id_list, but no input_id_list parameter specified";
     }
 
+    $self->stage_input_ids($params, $stage_dir, $ids);
+}
+
+sub stage_input_feature_group
+{
+    my($self, $params, $stage_dir) = @_;
+
+    my $group = $params->{input_feature_group};
+    
+    if (!defined($group))
+    {
+	die "Input source defined as feature_group, but no input_feature_group parameter specified";
+    }
+
+    my $ids = $self->api->retrieve_patricids_from_feature_group($group);
+
+    $self->stage_input_ids($params, $stage_dir, $ids);
+}
+
+sub stage_input_ids
+{
+    my($self, $params, $stage_dir, $ids) = @_;
+
     my $seqs;
     if ($params->{input_type} eq 'aa')
     {
@@ -536,11 +564,90 @@ sub stage_database_fasta_file
     return $file;
 }
 
+sub stage_database_ids
+{
+    my($self, $params, $stage_dir, $ids, $blast_params) = @_;
+
+    my $seqs;
+    if ($makeblastdb_dbtype{$params->{db_type}} eq 'prot')
+    {
+	$seqs = $self->api->retrieve_protein_feature_sequence($ids);
+    }
+    else
+    {
+	$seqs = $self->api->retrieve_nucleotide_feature_sequence($ids);
+    }
+
+    my $file = "$stage_dir/db_$params->{db_type}.fa";
+    if (open(my $fh, ">", $file))
+    {
+	for my $id (@$ids)
+	{
+	    print_alignment_as_fasta($fh, [$id, undef, $seqs->{$id}]);
+	}
+	close($fh);
+    }
+    else
+    {
+	die "Cannot open $file for writing: $!";
+    }
+    my $ok = run(["makeblastdb",
+		  "-dbtype", $makeblastdb_dbtype{$params->{db_type}},
+		  "-in", $file]);
+    $ok or die "makeblastdb failed: $!";
+    return $file;
+}
+
+sub stage_database_id_list
+{
+    my($self, $params, $stage_dir, $blast_params) = @_;
+
+    my $ids = $self->app->validate_param_array('db_id_list');
+    if (!defined($ids))
+    {
+	die "Database source defined as id_list, but no db_id_list parameter specified";
+    }
+
+    my $file = $self->stage_database_ids($params, $stage_dir, $ids, $blast_params);
+
+    return $file;
+}
+
+sub stage_database_feature_group
+{
+    my($self, $params, $stage_dir, $blast_params) = @_;
+
+    my $group = $params->{db_feature_group};
+    
+    my $ids = $self->api->retrieve_patricids_from_feature_group($group);
+
+    my $file = $self->stage_database_ids($params, $stage_dir, $ids, $blast_params);
+
+    return $file;
+}
+
 sub stage_database_genome_list
 {
     my($self, $params, $stage_dir, $blast_params) = @_;
 
     my $genomes = $params->{db_genome_list};
+
+    $self->stage_database_genomes($params, $genomes, $stage_dir, $blast_params);
+}
+
+sub stage_database_genome_group
+{
+    my($self, $params, $stage_dir, $blast_params) = @_;
+
+    my $group = $params->{db_genome_group};
+    my $genomes = $self->api->retrieve_patric_ids_from_genome_group($group);
+    
+    $self->stage_database_genomes($params, $genomes, $stage_dir, $blast_params);
+}
+
+sub stage_database_genomes
+{
+    my($self, $params, $genomes, $stage_dir, $blast_params) = @_;
 
     my $dblist = "$stage_dir/genome-list";
     open(D, ">", $dblist) or die "Cannot write $dblist: $!";

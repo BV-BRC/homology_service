@@ -14,10 +14,10 @@
         },
         {
             "id": "input_source",
-            "label": "Source of input (id_list, fasta_data, fasta_file)",
+            "label": "Source of input (id_list, fasta_data, fasta_file, feature_group)",
             "required": 1,
             "type": "enum",
-            "enum": ["id_list", "fasta_data", "fasta_file"]
+            "enum": ["id_list", "fasta_data", "fasta_file", "feature_group"]
         },
 	{
 	    "id": "input_fasta_data",
@@ -41,6 +41,13 @@
 	    "type": "wsid"
 	},
 	{
+	    "id": "input_feature_group",
+	    "label": "Input sequence as a workspace feature group",
+	    "required": 0,
+	    "default": null,
+	    "type": "wsid"
+	},
+	{
 	    "id": "db_type",
 	    "label": "Database type to search (protein / DNA / RNA / contigs)",
 	    "required": 1,
@@ -49,10 +56,10 @@
 	},
 	{
 	    "id": "db_source",
-            "label": "Source of database (fasta_data, fasta_file, genome_list, taxon_list, precomputed_database)",
+            "label": "Source of database (id_list, fasta_data, fasta_file, genome_list, taxon_list, feature_group, genome_group, precomputed_database)",
             "required": 1,
             "type": "enum",
-            "enum": ["fasta_data", "fasta_file", "genome_list", "taxon_list", "precomputed_database"]
+            "enum": ["id_list", "fasta_data", "fasta_file", "genome_list", "feature_group", "genome_group", "taxon_list", "precomputed_database"]
 	},
 	{ 
 	    "id": "db_fasta_data",
@@ -64,6 +71,27 @@
 	{ 
 	    "id": "db_fasta_file",
 	    "label": "Database fasta file",
+	    "required": 0,
+	    "default": null,
+	    "type": "wsid"
+	},
+	{
+	    "id": "db_id_list",
+	    "label": "Database as a list of sequence identifiers",
+	    "required": 0,
+	    "default": null,
+	    "type": "array"
+	},
+	{ 
+	    "id": "db_feature_group",
+	    "label": "Database feature group",
+	    "required": 0,
+	    "default": null,
+	    "type": "wsid"
+	},
+	{ 
+	    "id": "db_genome_group",
+	    "label": "Database genome group",
 	    "required": 0,
 	    "default": null,
 	    "type": "wsid"
