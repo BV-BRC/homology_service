@@ -1047,6 +1047,12 @@ sub decode_title
 	    $md->{genome_name} = $2;
 	    $md->{genome_id} = $4 if $4;
 	}
+	elsif ($desc->{title} =~ /^(\S+)\s+(.*)\s*$/)
+	{
+	    $desc->{id} = $1;
+	    $md->{function} = $2;
+	    $desc->{title} = $2;
+	}
 	else
 	{
 	    $desc->{id} = $desc->{title};
