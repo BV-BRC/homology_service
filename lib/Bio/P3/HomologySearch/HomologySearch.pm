@@ -216,7 +216,7 @@ sub new
 	api => $api,
 	database_path => blast_db_search_path,
 	json => JSON::XS->new->pretty,
- 	blastdbs => 
+	short_feature_threshold => 30,
     };
 
     $self->{blast_sqlite_db} = blast_sqlite_db;
@@ -332,7 +332,7 @@ sub process
     $self->output_base($output_base);
     $self->output_folder($output_folder);
 
-    my $input_file = $self->stage_input($params, $stage_dir);
+    my($input_file, $is_short) = $self->stage_input($params, $stage_dir);
     my($db_file, $blast_params) = $self->stage_database($params, $stage_dir);
 
     if (!$db_file)
@@ -343,7 +343,7 @@ sub process
     my $blast_program = $self->determine_blast_program($params);
     $self->blast_program($blast_program);
 
-    $self->run_blast($params, $input_file, $db_file, $blast_program, $blast_params, $work_dir);
+    $self->run_blast($params, $input_file, $db_file, $blast_program, $blast_params, $work_dir, $is_short);
 
     # Write output
 
@@ -376,8 +376,8 @@ sub stage_input
 
     my $src = $params->{input_source};
     my $method = "stage_input_$src";
-    my $file = $self->$method($params, $stage_dir);
-    return $file;
+    my($file, $is_short) = $self->$method($params, $stage_dir);
+    return($file, $is_short);
 }
 
 sub stage_input_id_list
@@ -390,7 +390,7 @@ sub stage_input_id_list
 	die "Input source defined as id_list, but no input_id_list parameter specified";
     }
 
-    $self->stage_input_ids($params, $stage_dir, $ids);
+    return $self->stage_input_ids($params, $stage_dir, $ids);
 }
 
 sub stage_input_feature_group
@@ -406,7 +406,7 @@ sub stage_input_feature_group
 
     my $ids = $self->api->retrieve_patricids_from_feature_group($group);
 
-    $self->stage_input_ids($params, $stage_dir, $ids);
+    return $self->stage_input_ids($params, $stage_dir, $ids);
 }
 
 sub stage_input_ids
@@ -424,10 +424,12 @@ sub stage_input_ids
     }
 
     my $file = "$stage_dir/input_$params->{input_type}.fa";
+    my $is_short = 1;
     if (open(my $fh, ">", $file))
     {
 	for my $id (@$ids)
 	{
+	    $is_short = 0 if length($seqs->{$id}) > $self->{short_feature_threshold};
 	    print_alignment_as_fasta($fh, [$id, undef, $seqs->{$id}]);
 	}
 	close($fh);
@@ -436,7 +438,7 @@ sub stage_input_ids
     {
 	die "Cannot open $file for writing: $!";
     }
-    return $file;
+    return ($file, $is_short);
 }
 
 sub stage_input_fasta_data
@@ -444,16 +446,20 @@ sub stage_input_fasta_data
     my($self, $params, $stage_dir) = @_;
 
     my $file = "$stage_dir/input_$params->{input_type}.fa";
-    if (open(my $fh, ">", $file))
+    open(my $infh, "<", \$params->{input_fasta_data})
+	or die "Cannot open input fasta data for reading: $!";
+
+    open(my $fh, ">", $file)
+	or die "Cannot open $file for writing: $!";
+
+    my $is_short = 1;
+    while (my($id, $def, $seq) = read_next_fasta_seq($infh))
     {
-	print $fh $params->{input_fasta_data};
-	close($fh);
+	print "$id " . length($seq). "\n";
+	$is_short = 0 if length($seq) > $self->{short_feature_threshold};
+	print_alignment_as_fasta($fh, [$id, $def, $seq]);
     }
-    else
-    {
-	die "Cannot open $file for writing: $!";
-    }
-    return $file;
+    return ($file, $is_short);
 }
 
 #
@@ -465,18 +471,26 @@ sub stage_input_fasta_file
     my $file = "$stage_dir/input_$params->{input_type}.fa";
     my $ws = Bio::P3::Workspace::WorkspaceClientExt->new;
 
+    my $is_short = 1;
     if (open(my $fh, ">", $file))
     {
 
 	$ws->copy_files_to_handles(1, undef, [[$params->{input_fasta_file}, $fh]]);
 
 	close($fh);
+
+	open(my $fh, "<", $file);
+	while (my($id, $def, $seq) = read_next_fasta_seq($fh))
+	{
+	    $is_short = 0 if length($seq) > $self->{short_feature_threshold};
+	}
+	close($fh);
     }
     else
     {
 	die "Cannot open $file for writing: $!";
     }
-    return $file;
+    return($file, $is_short);
 }
 
 =head2 stage_database
@@ -870,7 +884,7 @@ sub determine_blast_program
 
 sub run_blast
 {
-    my($self, $params, $input_file, $db_file, $blast_program, $blast_params, $work_dir) = @_;
+    my($self, $params, $input_file, $db_file, $blast_program, $blast_params, $work_dir, $is_short) = @_;
 
     #
     # Set output format to blast archive, then translate to desired formats.
@@ -895,6 +909,16 @@ sub run_blast
 	 "-outfmt", 11,
 	 "-out", $out_file,
 	);
+
+    if ($blast_program eq 'blastn' && $is_short)
+    {
+	push(@opts, "-task", "blastn-short");
+    }
+    elsif ($blast_program eq 'blastp' && $is_short)
+    {
+	push(@opts, "-task", "blastp-short");
+    }
+
 
     if (exists $params->{blast_evalue_cutoff})
     {
@@ -1198,7 +1222,6 @@ sub compute_db_preflight
 
     return($db_type, $sz);
 }
-
 
 
 1;
