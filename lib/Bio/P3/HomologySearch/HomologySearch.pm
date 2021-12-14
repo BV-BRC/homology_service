@@ -1154,6 +1154,12 @@ sub compute_input_preflight
 	    die "Input file $params->{input_fasta_file} not found\n";
 	}
     }
+    elsif ($src eq 'feature_group')
+    {
+	my $ids = $self->api->retrieve_patricids_from_feature_group($params->{input_feature_group});
+	$sz = @$ids * 1000;
+	$sz *= 3 if $inp_type eq 'dna';
+    }
     else
     {
 	die "Invalid input type $src\n";
