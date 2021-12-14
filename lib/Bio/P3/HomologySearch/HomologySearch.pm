@@ -1195,6 +1195,16 @@ sub compute_db_preflight
 	$sz = 1000000;
 	$sz *= 3 if $db_type ne 'faa';
     }
+    elsif ($db_src eq 'genome_group')
+    {
+	$sz = 1000000;
+	$sz *= 3 if $db_type ne 'faa';
+    }
+    elsif ($db_src eq 'feature_group')
+    {
+	$sz = 1000000;
+	$sz *= 3 if $db_type ne 'faa';
+    }
     elsif ($db_src eq 'taxon_list')
     {
 	my($taxa, $file_list) = $self->blastdbs->find_databases_for_taxa($db_type, $params->{db_taxon_list});
