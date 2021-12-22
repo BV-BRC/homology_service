@@ -57,7 +57,8 @@ sub new
     my $dbh = DBI->connect("dbi:SQLite:$db_file", undef, undef, {
 	AutoCommit => 1,	     
 	RaiseError => 1,	     
-    });	
+    });
+    print STDERR "Opened $db_file\n";
 
     $dbh->do("PRAGMA foreign_keys = ON");
 
@@ -116,7 +117,7 @@ sub search_taxa
 		 JOIN GenomeGroup g on g.id = b.genome_group
 		 WHERE $where);
 
-    print "$qry\n";
+    print STDERR Dumper($qry, \@params);
     my $res = $self->dbh->selectall_arrayref($qry, undef, @params);
 
     my %dbs;

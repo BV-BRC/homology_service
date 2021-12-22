@@ -180,7 +180,7 @@ my $ok = run(["cat", @$db_files],
 	      "-title", $opt->title,
 	      "-dbtype", $blast_type{$dbtype}]);
 
-$ok or die "Error  creating blastdb: $!";
+$ok or die "Error  creating blastdb: $?";
 	   
 #
 # We write a single data file with results from the batched data api calls.

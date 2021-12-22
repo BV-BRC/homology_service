@@ -151,6 +151,7 @@ if ($opt->viral)
 }
 else
 {
+    push(@create_options, "--no-check-files");
     $catchall_taxon = 2;
 }
     

@@ -100,12 +100,12 @@ sub process_path
     {
 	my $curated = $curated{dirname($dir)} ? 1 : 0;
 	print "$dir " . dirname($dir) . " curated=$curated\n";
-	return;
+	# return;
 	$dbh->begin_work();
 	$dbh->do(qq(INSERT OR IGNORE INTO GenomeGroup (name) VALUES (?)), undef, $tag);
 	my $res = $dbh->selectcol_arrayref(qq(SELECT id FROM GenomeGroup WHERE name = ?), undef, $tag);
 	$sql_genome_group = $res->[0];
-#	$dbh->commit();
+	# $dbh->commit();
 	print "group=$sql_genome_group\n";
     }
 
@@ -123,7 +123,7 @@ sub process_path
     if ($dbh)
     {
 	my($t) = $dbh->selectcol_arrayref(qq(SELECT id FROM DbType WHERE suffix = ?), undef, $dbtype);
-	warn Dumper($dbtype, $t);
+	# warn Dumper($dbtype, $t);
 	$sql_dbtype = $t->[0];
 	($t) = $dbh->selectcol_arrayref(qq(SELECT id FROM FeatureType WHERE name = ?), undef, $ftype);
 	# warn Dumper($ftype, $t);
