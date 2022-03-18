@@ -1,0 +1,928 @@
+#
+# Run a single-query benchmark against all the databases in the blast database list.
+#
+
+use strict;
+use Time::HiRes qw(gettimeofday);
+use Bio::P3::HomologySearch::BlastDatabases;
+use Data::Dumper;
+use gjoseqlib;
+use File::Temp;
+use IPC::Run 'run';
+use JSON::XS;
+
+my $json = JSON::XS->new->pretty->canonical;
+
+@ARGV == 1 or die "Usage: $0 outfile\n";
+my $out = shift;
+-s $out && die "Output $out already exists\n";
+open(OUT, ">", $out) or die "Cannot write $out: $!\n";
+
+my $db_path = "/vol/blastdb/bvbrc-service";
+my $db_collection = Bio::P3::HomologySearch::BlastDatabases->new($db_path);
+
+our $inp_seqs_aa;
+our $inp_seqs_dna;
+
+my ($seq_size_aa, $seq_size_dna) = init_seqs();
+
+my $aa_qry_tmp = File::Temp->new();
+print $aa_qry_tmp $inp_seqs_aa;
+close($aa_qry_tmp);
+
+my $dna_qry_tmp = File::Temp->new();
+print $dna_qry_tmp $inp_seqs_dna;
+close($dna_qry_tmp);
+
+my %inputs = (aa => [$aa_qry_tmp, $seq_size_aa],
+	      dna => [$dna_qry_tmp, $seq_size_dna]);
+
+
+my $threads = 4;
+
+our %search_type_map =
+    (aa => {
+	faa => ['blastp'],
+	ffn => ['tblastn'],
+	frn => ['tblastn'],
+	fna => ['tblastn'],
+    },
+     dna => {
+	 faa => ['blastx'],
+	 ffn => ['blastn', 'tblastx'],
+	 frn => ['blastn', 'tblastx'],
+	 fna => ['blastn', 'tblastx'],
+     });
+
+my %blast_skip = (tblastx => 1);
+
+#
+# Benchmark output
+#
+# [
+# {
+#    db_name => name,
+#    db_list => [ {
+#       ftype => $ftype, path => $path, type => $type,
+#       benchmarks => [ 
+#         {  inp_type => aa|dna, program => blastprog, threads => N, inp_size => N, out_size=> N, time => N }
+#	}
+#       ]
+# } ]
+
+my @db_bench;
+
+for my $db ($db_collection->databases)
+{
+    print "$db->{name}\n";
+
+    my $db_ent = {
+	name => $db->{name},
+	db_list => [],
+    };
+    push(@db_bench, $db_ent);
+	
+    for my $inst (@{$db->{db_list}})
+    {
+	my($ftype, $path, $type) = @$inst{qw(ftype path type)};
+	my $p = $db_path . "/" . $inst->{path};
+	print "$p $ftype $type\n";
+
+	my $bench_ent = {
+	    ftype => $ftype,
+	    path => $path,
+	    type => $type,
+	    benchmarks => [],
+	};
+	push(@{$db_ent->{db_list}}, $bench_ent);
+
+	for my $inp_type (keys %inputs)
+	{
+	    my($inp_seq, $inp_size) = @{$inputs{$inp_type}};
+
+	    my $blasts = $search_type_map{$inp_type}->{$type};
+	    for my $blast (@$blasts)
+	    {
+		next if $blast_skip{$blast};
+		print "blast $inp_type: $blast\n";
+		my $out = File::Temp->new;
+		close($out);
+		
+		my $cmd = [$blast,
+			      "-db", $p,
+			      "-query", $inp_seq,
+			      "-num_threads", $threads,
+			   "-out", $out];
+		print "@$cmd\n";
+		my $start = gettimeofday;
+		my $ok = run($cmd);
+		my $end = gettimeofday;
+		$ok or die "Run failed with $?: @$cmd\n";
+
+		my $out_size = `wc -l $out | cut -d' ' -f1`;
+		chomp $out_size;
+		my $elap = $end - $start;
+		print "outsize $out_size $elap\n";
+
+		my $this_bench = {
+		    inp_type => $inp_type,
+		    program => $blast,
+		    threads => $threads,
+		    inp_size => $inp_size,
+		    out_size => $out_size,
+		    time => $elap,
+		};
+		push(@{$bench_ent->{benchmarks}}, $this_bench);
+	    }
+	}
+    }
+}
+print OUT $json->encode(\@db_bench);
+close(OUT);
+
+sub init_seqs
+{
+
+    $inp_seqs_aa = <<END;
+>fig|287.15923.peg.10|K5B69_00050|   DNA-3-methyladenine glycosylase (EC 3.2.2.20)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MPRCFWCNDDPLYMAYHDEEWGVPQRDPDALFELLLLEGFQAGLSWITVLKKRERYREVL
+FGFDVQRVAQMSDAEIDELMLDPGIIRNRAKLNAARQNAQAWLELDDPAGFLWSFVGGQP
+KINHFAGRAEVPAITPEAEAMSKALRKAGFNFVGPTICYAFMQASGMVMDHTQDCDRYAQ
+LVG
+>fig|287.15923.peg.8|K5B69_00040|   Glycyl-tRNA synthetase beta chain (EC 6.1.1.14)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MMSAKDFLVELGTEELPPKALNSLGEAFLSGIEKGLKAAGLSYAAARFYAAPRRLAVLVE
+QLAVQQPDRTVNLDGPPLQAAFDASGNPTQAALGFAKKCGVDLQQIDKSGPKLRFSRTIA
+GQPAAGLLPGIVEASLNELPIPKRMRWAARREEFVRPTQWLVMLFGDDVVECEILAQKAG
+RESRGHRFHNPDNVRISSPAAYLEDLRGAHVLADFAERRELIAKRVAELAAEQQGSAIVP
+PSLLDEVTALVEWPVPLVCSFEERFLEVPQEALITTMQDNQKYFCLLDANGKLLPRFITV
+ANVESKAPENIVSGNEKVVRPRLTDAEFFFKQDKKQPLESFNERLRNVVFQAQLGTVFEK
+AQRVSGLAAYIAERIGGNAQNAARAGILSKCDLATEMVGEFPEMQGIAGYYYATHGGEAE
+DVALALNEQYMPRGAGAELPSTLTGAAVAVADKLDTLVGIFGIGMLPTGSKDPYALRRAA
+LGVLRILIEKQLDLDLVAAVNAAVEQYGDKVKAAGLAEQVLDFVFDRLRARYEDEGVDVA
+VYQSVRALKPSSPLDFDQRVQAVQAFRQLPEAEALAAANKRVSNILAKSEDEVPPNVDAS
+LLVEAAEKALGSAVANAESEVAPLAAARDYRAALARLAALREPVDTFFADVMVNVDDAAV
+RANRYALLAKLRGSFLGVADISLLG
+>fig|287.15923.peg.9|K5B69_00045|   Glycyl-tRNA synthetase alpha chain (EC 6.1.1.14)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MSQTTPAVRTFQDLILALQNYWAEQGCVVLQPYDMEVGAGTFHTATFLRAIGPETWNAAY
+VQPSRRPTDGRYGENPNRLQHYYQFQVVLKPNPENFQELYLGSLKAIGIDPLVHDIRFVE
+DNWESPTLGAWGLGWEIWLNGMEVTQFTYFQQVGGIECYPVTGEITYGLERLAMYLQGVD
+SVYDLVWTDGPFGKVTYGDVFHQNEVEQSTFNFEHANVPKLFELFDFYESEANRLIALEL
+PLPTYEMVLKASHTFNLLDARRAISVTERQRYILRVRTLARAVAQSYLQARARLGFPMAT
+PELRDEVLAKLKEAE
+>fig|287.15923.peg.11|K5B69_00055|   Lipid A biosynthesis lauroyl acyltransferase (EC 2.3.1.241)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MEKFKGALVVGALRLFALLPWRAVQGVGAGIGWLMWKLPNRSREVVRINLSKCFPELSET
+ELEKLVGQSLMDIGRTLTESACAWIWPPEKSLRYIREVEGMEVLEEALASGDGLVGITSH
+LGNWEVLNHFYCSYAKPIIFYRPPKLKAVDELLKKQRVQLGNRVAPSTPEGILSVIKEVK
+KGGCVGIPADPEPARTAGLFVPYLGTTALISKFVPQLLSRGKARGVFFHAVRLPDGSGYK
+VILEAAPADMYDKDLEVSVAAMSRELAKYVRAYPSQYMWSMKRFKNRPDGEKKWY
+>fig|287.15923.peg.14|K5B69_00070|   hypothetical protein   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MSKQERSVPSYVEYPYEQAILYVHRNASANEMLESVQERLRALLGLLHALERIEVRTGQG
+VPIQRVAHILVTLGGDALTLLTAAHRATTS
+>fig|287.15923.peg.13|K5B69_00065|   Putative preQ0 transporter YhhQ   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MSASSPAAWRGTLAGLIAFHIFIIIASNYLVQLPITLFGWHTTWGAFSFPFIFLATDLTV
+RLLGKGPARLVIARVMIPALIASYVVSVLFQEAAFRGFSALLEFNTFVARISLASFLAYV
+LGQILDIQVFDRLRRSRHWWTAPVASTILGNLLDTFTFFFVAFWRSDNPFMAQHWVEIAT
+VDYGVKLSISLLLFVPLYGMLLNGILKMLPGRPQSNA
+>fig|287.15923.peg.12|K5B69_00060|   hypothetical protein   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MDNQRQYPRTPLKCRIRISHPLFGELMAQTRDLSDTGVYVKHPELTQLPTGSVVTGQVQD
+LPIDAPILQMEVVRVDAEGVGLRFLSEA
+>fig|287.15923.peg.15|K5B69_00075|   FIG140336: TPR domain protein   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MMIEGLEKMLAKGVDNALLRFGLGKGYLDAGDAERAAEHLQRCVEQDPKYSAGWKLLGKA
+RQAAGDLAGARQAWEQGLATAATHGDKQAEKEMTVFLRKLDRART
+>fig|287.15923.peg.16|K5B69_00080|   Trk potassium uptake system protein TrkA   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MKIIILGAGQVGGTLAEHLASEANDITVVDTDGDRLRDLGDRLDIRTVQGKASFPTVLRQ
+AGADDADMLVAVTNSDETNMVACQVAYTLFNTPTKIARVREPAYLTRTGLFDNEAIPVDV
+LISPEQVVTNYIKRLIEHPGALQVIDFAEGKAQLVGIKAYYGGPLVGQELRQLREHMPNV
+DTRVAAIYRRNRPIIPQGDTVIEADDEVFFIAAKAHIRAVMGEMRRLDDSYKRIIIAGGG
+NVGERLAEAIESRYQVKIIERSPLRCRHLSDTLDSTIVLNGSASDRDLLLEENIGETDVF
+LALTNDDEANIMSSLLAKRLGASKVMTLINNPAYVDLVQGGEIDIAISPQLATIGTLLAH
+VRRGDIESVHSLRRGAAEAIEVVAHGDAKSSKVIGRSINEIKLPPGTTIGALVRDEEVLI
+AHGDTRIESGDHVLLFLVDKKYIRDVERLFQAGLTFF
+>fig|287.15923.peg.2|K5B69_00010|   DNA polymerase III beta subunit (EC 2.7.7.7)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MHFTIQREALLKPLQLVAGVVERRQTLPVLSNVLLVVEGQQLSLTGTDLEVELVGRVVLE
+DAAEPGEITVPARKLMDICKSLPNDVLIDIRVEEQKLLVKAGRSRFTLSTLPANDFPTVE
+EGPGSLNFSIAQSKLRRLIDRTSFAMAQQDVRYYLNGMLLEVNGGTLRSVATDGHRLAMC
+SLDAQIPSQDRHQVIVPRKGILELARLLTEQDGEVGIVLGQHHIRATTGEFTFTSKLVDG
+KFPDYERVLPRGGDKLVVGDRQQLREAFSRTAILSNEKYRGIRLQLSNGLLKIQANNPEQ
+EEAEEEVQVEYNGGNLEIGFNVSYLLDVLGVIGTEQVRFILSDSNSSALVHEADNDDSAY
+VVMPMRL
+>fig|287.15923.peg.18|K5B69_00090|   Methionyl-tRNA formyltransferase (EC 2.1.2.9)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MSQALRIVFAGTPEFAAEHLKALLDTPHRIVAVYTQPDRPAGRGQKLMPSAVKNLALEHG
+LPVMQPQSLRNAEAQAELAALRADLMVVVAYGLILPQAVLDIPRLGCINSHASLLPRWRG
+AAPIQRAVEAGDAESGVTVMQMEAGLDTGPMLLKVSTPISAADTGGSLHDRLAALGPKAV
+IEAIAGLAAGTLHGEIQDDALATYAHKLNKDEARLDWSRPAVELERQVRAFTPWPVCHTS
+LADAPLKVLGASLGQGSGAPGTILEASRDGLLVACGEGALRLTRLQLPGGKPLAFADLYN
+SRREQFAAGQVLGQ
+>fig|287.15923.peg.19|K5B69_00095|   Peptide deformylase (EC 3.5.1.88)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MAILNILEFPDPRLRTIAKPVEVVDDAVRQLIDDMFETMYEAPGIGLAATQVNVHKRIVV
+MDLSEDKSEPRVFINPEFEPLTEDMDQYQEGCLSVPGFYENVDRPQKVRIKALDRDGNPF
+EEVAEGLLAVCIQHECDHLNGKLFVDYLSTLKRDRIRKKLEKQHRQQA
+>fig|287.15923.peg.20|K5B69_00100|   Uncharacterized protein with LysM domain, COG1652   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MRKSLVALLLLAASGLAQAQVDLREGHPDRYTVVRGDTLWDISGKFLRQPWKWPELWHAN
+PQIQNPHLIYPGDTLSLVYVDGQPRLVLNRGESRGTIKLSPKIRSTPIAEAIPTIPLDKI
+NSFLLANRIVDDEKTFTSAPYIVAGNAERIVSGTGDRIYARGKFADGQPAYGIFRQGKVY
+IDPKTKEVLGINADDIGGGEVVATEGDVATLALTRTTQEVRLGDRLFPTEERAVNSTFMP
+GEPSREVKGEIIDVPRGVTQIGQFDVVTLNRGQRDGLAEGNVLAIYKVGETVRDRVTGES
+VKIPDERAGLLMVFRTYKKLSYALVLMASRPLSVTDRVQNP
+>fig|287.15923.peg.21|K5B69_00105|   Rossmann fold nucleotide-binding protein Smf possibly involved in DNA uptake   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MKNHSPAELEARLRLHGLPELGPMRFLRLIEAFGSASSALAAPAGAWRTLGVPAEAAAAR
+RSPAVREAAGEALRWLEGPRRHLLMWDDPGYPALLAEVADAPPLLYVEGAPETLERPQLA
+MVGSRRASPAGLGTARSFARSLAQGGFAITSGLALGIDGAAHEGALEAGGATVAVLGTGL
+RRLYPRRHEALARRIVEGGGALVSELPLDSPPLPANFPRRNRIISGLSLGVLVVEASPAS
+GSLITARLAAEQGREVYAIPGSIHHPGARGCHQLIRDGALLVESVGHVLEALRGWAQAEP
+AEAPAQPLPHPLLALLRAAPYTSEGLAAASGMTLPDVLATLSELELDGRVACEAGTWVHR
+SG
+>fig|287.15923.peg.22|K5B69_00110|   Threonylcarbamoyl-AMP synthase (EC 2.7.7.87)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MISSFRAQCAARVVREGGVIAYPTEAVWGLGCDPWNEDAVYRLLALKARPVEKGLIVVAA
+NIHQLDFLLEDLPDVWLDRLAGTWPGPNTWLVPHQERLPEWVTGVHESVAVRVTDHPLVQ
+ELCHLTGPLISTSANPAGRPAARTRLRVEQYFHDELDAILGGALGGRRNPSLIRDLVTGQ
+VIRPA
+>fig|287.15923.peg.23|K5B69_00115|   Quinone oxidoreductase (EC 1.6.5.5)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MAKRIQFAAYGGPEVLEYRDYQPAEPGPREVRVRNRAIGLNFIDTYYRSGLYPAPGLPSG
+LGSEGAGEVEAVGSEVTRFKVGDRVAYATGPLGAYSELHVLAEEKLVHLPDGIDFEQAAA
+VMLKGLTTQYLLRQTYELRGGETILFHAAAGGVGLFACQWAKALGVQLIGTVSSPEKARL
+ARQHGAWETIDYSHENVAWRVLELTDGKKCPVVYDSVGKDTWETSLDCVAPRGLLVSFGN
+ASGPVTGVNLGILSQKGSLYVTRPTLGSYADTPEKLQAMADELFGLIERGDIRIEINQRF
+ALAEAARAHTELAARRTTGSTVLLP
+>fig|287.15923.peg.17|K5B69_00085|   16S rRNA (cytosine(967)-C(5))-methyltransferase (EC 2.1.1.176)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MNPRLAACQALAAVLAGRASLSGALPPQLDKVAPRDRGLTQELAFGAARWQPRLQALAAR
+LLQKPFKAADTDIHALLLIGLYQLLYTRIPPHAAIGETVGCADKLKKGWAKGVLNAVLRR
+AQREGETLLAEVDRDPSARLGHPRWLLKALKQAWPEQLDALCAANNAHPPMTLRVNRRHG
+ERDAYLAELAEAGIKARACDYSRDGIQLAAPRDVRELPGFAEGRVSVQDEAAQLAAEQLE
+SAPGQRVLDACCAPGGKTCHLLETQPGLAEVVAVDLEESRLVRVRENLQRLGLQASLVAA
+DARATGEWWDGKPFQRILLDAPCSATGVIRRHPDIKLARKPEDIAALAHLQGELLDALWP
+TLEVGGVLLYATCSVMPAENSDSIAAFLARTPGARELDLPGPWGMKQPHGRQLLPQVEGH
+DGFYYAKLIKISAR
+>fig|287.15923.peg.24|K5B69_00120|   Coproporphyrinogen III oxidase, aerobic (EC 1.3.3.3)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MTDRIAAVKTYLLDLQDRICAALETEDGKARFAEDAWERPAGGGGRTRVIGDGALIEKGG
+VNFSHVFGDSLPPSASAHRPELAGRGFQALGVSLVIHPENPHVPTSHANVRFFCAEKEGE
+EPVWWFGGGFDLTPYYAHEEDCVHWHRVARDACAPFGADVYPRYKEWCDRYFHLKHRNEP
+RGIGGLFFDDLNQWDFDTCFAFIRAIGDAYIDAYLPIVQRRKHTPFDERQREFQAYRRGR
+YVEFNLVFDRGTLFGLQSGGRTESILMSLPPQVRWGYDWKPEPGSEEARLTEYFLADRDW
+LAGQP
+>fig|287.15923.peg.1|K5B69_00005|   Chromosomal replication initiator protein DnaA   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MSVELWQQCVDLLRDELPSQQFNTWIRPLQVEAEGDELRVYAPNRFVLDWVNEKYLGRLL
+ELLGERGEGQLPALSLLIGSKRSRTPRAAIVPSQTHVAPPPPVAPPPAPVQPVSAAPVVV
+PREELPPVTTAPSVSSDPYEPEEPSIDPLAAAMPAGAAPAVRTERNVQVEGALKHTSYLN
+RTFTFENFVEGKSNQLARAAAWQVADNLKHGYNPLFLYGGVGLGKTHLMHAVGNHLLKKN
+PNAKVVYLHSERFVADMVKALQLNAINEFKRFYRSVDALLIDDIQFFARKERSQEEFFHT
+FNALLEGGQQVILTSDRYPKEIEGLEERLKSRFGWGLTVAVEPPELETRVAILMKKAEQA
+KIELPHDAAFFIAQRIRSNVRELEGALKRVIAHSHFMGRPITIELIRESLKDLLALQDKL
+VSIDNIQRTVAEYYKIKISDLLSKRRSRSVARPRQVAMALSKELTNHSLPEIGVAFGGRD
+HTTVLHACRKIAQLRESDADIREDYKNLLRTLTT
+>fig|287.15923.peg.26|K5B69_00130|   hypothetical protein   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MKTFARLAAGLCICAIASQANAWSQPTHKNIVKDALAFMNSSYATEEMRQAYRFYVSAAG
+SEAQAGEILGQAAFDVDDFKDTRLGGWWVGYEHAPLWGAASGIVNYTSYWHFLNLARDGD
+SHGNPHGGYDYRYHKVDGGIADVDWYAMVYLYNRELKREDFDTTEAHYRQGTRSDWQEHY
+GDFQTAAFQPIDNLATYWFEQFRAAPSLQTIGYALHATGDVAQPHHVWITSANGHSSWEG
+WVDDHYASEKLNDPAAVANLVGRYDPSKSIRDLLTQTGQVAYARPEPLYDTSYETRLRVA
+KELIPESIALTVTVLTKGANSFDAPTAL
+>fig|287.15923.peg.25|K5B69_00125|   Shikimate 5-dehydrogenase I alpha (EC 1.1.1.25)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MDRYCVFGNPIGHSKSPLIHRLFAEQTGEALVYDAQLAPLDDFPGFARRFFEQGKGANVT
+VPFKEEAYRLVDELSERATRAGAVNTLIRLADGRLRGDNTDGAGLLRDLTANAGVELRGK
+RVLLLGAGGAVRGVLEPFLGECPAELLIANRTARKAVDLAERFADLGAVHGCGFAEVEGP
+FDLIVNGTSASLAGDVPPLAQSVIEPGRTVCYDMMYAKEPTAFNRWAAERGAARTLDGLG
+MLVEQAAEAFFLWRGVRPASAPVLETLRRQLATV
+>fig|287.15923.peg.27|K5B69_00135|   Parvulin-like peptidyl-prolyl isomerase   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MHRLLSDRARGWRRALCGIVLGLLAWSAHGVPAKAPQDLRIDGEVLPGRSIDLLEQALSR
+VKFNTDPQQLRRGLVENRLLARAVEDQLTAQSRADLDASVEIEAGNLLEQVYGRRYREDL
+GPYLRQPRALSAERLREVLAPRSRGLVENSLLLDETQRREAAGVELIGWQFPGQPAQVLD
+LLSLYEGDNVQGQVELQQGNLAYLARQVQTRIRRDYLWYRLARDGFGPAERQGVRTLVRD
+KLVRHRYLHQIGLYSDLHHESDALRELAGKVSDKDAEAYYRRNLERYRNVAQVQAAHIRL
+ADQASADKVYAELRGGLAFDEAVRRYSLADDRDRDPPGDLGLIRPQDGRLDLLRKTALIQ
+KADTVSQPMRIDGAFEIVRVRSREDRQLPLDDRSVRFEVNQAVAREQLAAQFETRLRNLL
+AGARVEGL
+>fig|287.15923.peg.3|K5B69_00015|   DNA recombination and repair protein RecF   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MSLTRVSVTAVRNLHPVTLSPSPRINILYGDNGSGKTSVLEAIHLLGLARSFRSARLQPV
+IQYEEAACTVFGQVMLANGIASNLGISRERQGEFTIRIDGQNARSAAQLAETLPLQLINP
+DSFRLLEGAPKIRRQFLDWGVFHVEPRFLPVWQRLQKALRQRNSWLRHGKLDPASQAAWD
+RELSLASDEIDAYRRSYIQALKPVFEETLAELVSLDDLTLSYYRGWDKDRDLLEVLASSL
+LRDQQMGHTQAGPQRADLRIRLSGHNAAEILSRGQQKLVVCALRIAQGHLINRAKRGQCV
+YLVDDLPSELDEQHRMALCRLLEDLGCQVFITCVDPQLLKDGWRTDTPVSMFHVEHGKVS
+QTTTIGSEA
+>fig|287.15923.peg.28|K5B69_00140|   hypothetical protein   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MKRWLGVALGCSGLAIALACAGVLLAPADMAASSSSPSPARTVAALPAVDDRPPPPAPVR
+SQAAAPAYEAEPPAAELDREQAIQFMQMLRDEGDPRSPPLGGLQPRQGATAQELADPKQY
+QAFEERQTRELVQAYTSGVQQIPEIRARIEAAEQGGERSAEEIDEARAALGQLEMMRDKL
+QRESPQLLPGDSAPTSPAAP
+>fig|287.15923.peg.4|K5B69_00020|   DNA gyrase subunit B (EC 5.99.1.3)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MSENNTYDSSSIKVLKGLDAVRKRPGMYIGDTDDGTGLHHMVFEVVDNSIDEALAGYCSE
+ISITIHTDESITVRDNGRGIPVDIHKEEGVSAAEVIMTVLHAGGKFDDNTYKVSGGLHGV
+GVSVVNALSHELRLTIRRHNKVWEQVYHHGVPQFPLREVGETDGSGTEVHFKPSPETFSN
+IHFSWDILAKRIRELSFLNSGVGILLRDERTGKEELFKYEGGLKAFVEYLNTNKTAVNEV
+FHFNVQREEDGVGVEVALQWNDSFNENLLCFTNNIPQRDGGTHLAGFRSALTRNLNNYIE
+AEGLAKKFKIATTGDDAREGLTAIISVKVPDPKFSSQTKDKLVSSEVKTAVEQEMGKYFA
+DFLLENPNEAKAVVGKMIDAARAREAARKAREMTRRKGALDIAGLPGKLADCQEKDPALS
+ELYIVEGDSAGGSAKQGRNRRTQAILPLKGKILNVEKARFDKMLSSQEVGTLITALGCGI
+GREEYNIDKLRYHNIIIMTDADVDGSHIRTLLLTFFFRQMPELIERGYIYIAQPPLYKVK
+RGKQEQYIKDDQAMEEYMTQSALEDASLHVNEHAPGLSGAALEKLVNEYRGVIATLKRLS
+RLYPQELTEHFIYLPTVSVDDLANESAMQGWLEKFQARLTAAEKSGLTYKASLREDRERH
+LWLPEVELVAHGLSSYVTFNRDFFASNDYRSVSLLGDQLNSLLEDGAYVQKGERKRPISA
+FKDGLDWLMAEGTKRHSIQRYKGLGEMNPEQLWETTMDPNVRRMLKVTIEDAIAADQIFN
+TLMGDAVEPRRDFIESNALAVSNLDV
+>fig|287.15923.peg.5|K5B69_00025|   Acyl-CoA:1-acyl-sn-glycerol-3-phosphate acyltransferase (EC 2.3.1.51)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MSTVQAIRTVLFYLLLSASAFVWGTLSFFIAPILPFRARYRFVVQNWCRFAIWLTRVVAG
+IRYEVRGLENIPEKPCVILSKHQSTWETFFLSGFFEPLSQVLKRELLYVPFFGWALALLK
+PIAIDRSQPKLALKQLAKQGDECLKKGAWVLIFPEGTRIPVGQMGKFSRGGTALAVNAGL
+PVLPIAHNAGQYWPKAGWAKYPGTIQVVIGPAMHAEGEGPRAIAELNQRAEAWVSETMAE
+ISPIQQRVSHPEPSVVS
+>fig|287.15923.peg.6|K5B69_00030|   Histidinol-phosphatase (EC 3.1.3.15)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MSRSLLILDRDGVINLDSDDYIKTLDEWIPIPSSIEAIARLSQAGWTVAVATNQSGIARG
+YYDLAVLEAMHARLRELVAEQGGEVGLIVYCPHGPDDGCDCRKPKPGMLRQIGEHYGVDL
+SGIWFVGDSIGDLEAARAVDCQPVLVKTGKGVRTLGKPLPEGTLIFDDLAAVASALLQ
+>fig|287.15923.peg.30|K5B69_00150|   Choline binding ABC transport system substrate-binding protein ChoX   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MNRLPTCLLAATLFLGSASLYAEDPACARVRLADPGWSDIAVTNATAAFLLESLGYQVKI
+DTLSVPIIYGGLRDGQVDAFLGGWMPAHQDYHDKFVASGQVERLGRNLDGTRFTLAVPRY
+VWDAGVHRFEDLAAQGQRFNRKLYGIGSGAPANQSIQKMIDANQFGLGDWKLVESSEQAM
+LAELGRAEKRQRWLVFLGWTPHPMNIRHDLRYLEGGEQYFGDRGQVYTLARKGYAAQCPN
+PARLLANLRFDLDMENRLMSDALEGTATPASATRAWLKANPRVLEAWLQGVTSRDGGDAL
+AAVRGQP
+>fig|287.15923.peg.29|K5B69_00145|   Sulfate permease   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MWTRLLPFLAWLPGLHRGMLGREAWVGLNGAILALPQSMAYALIAGLPAEYGLYAAMLPV
+AIACLWGSSRYLVSGPTAAISVLLFSSVAPLAPLGSPQYVQAVLLLTFLAGAFQWLLGVL
+RVGSLVNFVSHSVMLGFTLGAALLIVLGQLPYLLGLAASGEGAAPGNGWRLLARFAEFDG
+PSLLVGGFSFALSLLVRRLRPRWPALLLGLLGGATLVWALPGTFASVAHVQALSSALPGW
+NPLVFDSRSILDLLPAAVACGMLGLVTSLSIARALAARQGDAFDANQEVRAQGLSNLLGP
+WLSASLSAGSFTRSGLNLEAGARSPLAGAFSALWVALLAVLGARLIEHVPLPAMAAGILL
+IAWGLIDRPALRALYRSGRAECLVAGLTALATLLLPLQNAIYAGVLASLVFYLRRTSTPR
+VLRQHNDEEEVLRIEGSIFFGACDYLQRLMRQCDRPRLVLDARQVNFIDFAGAVLLQQEA
+RRLHAEGRRLVLRHARPQVREALGRQADEGCRLHYEG
+>fig|287.15923.peg.7|K5B69_00035|   hypothetical protein   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+MKRLKKTLHLSSLSLASLALSSAALAAAPVMLDQGKEWTESHRQDFYSRDQGSQVMPLPW
+LKALRQPDGTPFLADSLARYGYLPNPKAPAEGLPVGFTVAGTGARQMVGMTCSACHTRQI
+EVKGTAYRIDGGPAIVDFQAFLADLDRAVGPLTSDDAAFDAFAKPILGANPPPGARDALL
+AAVKEWYEPYHTLIERALPKDTWGPARLDAVSMIFNRLTGLDIGTAPPYLIPDNIKAADA
+PVRYPFLWNAARQNKTQWPGFAANGNDLLGLARNVGEVYGVFATFHPQKSKFHLLGMDYL
+KINSANFHGLGKLEDLIKKIGPPKWPWAVDKHLARKGALIFARKTDEGGCVECHGIRIKD
+LVLWDTPLRDVGSDSRQHAILDGQVQTGVMEGARMPFGQPLKATDGAFDVLAVAVAGSIL
+QHFVPILGEKHDAKAAAVKPESVMTDETRQLLTAFQKPVRTQADPYPYESRVLQGIWAAA
+PYLHNGSVPTLEELLKPAAERVESFPVGSAYDVDKVGLAAQQTQFGSYVLKTTGCEQRDS
+GNSRCGHEYGTSLSAEEKRALLEYLKVL
+END
+
+    $inp_seqs_dna = <<END;
+>fig|287.15923.peg.10|K5B69_00050|   DNA-3-methyladenine glycosylase (EC 3.2.2.20)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+atgccacgctgcttctggtgcaacgacgatcccctctacatggcctaccacgacgaggag
+tggggtgtgccgcagcgtgatcccgacgcgctgttcgaacttctgctgctggagggcttc
+caggccgggttgtcctggatcaccgtgctgaagaagcgcgagcgctaccgcgaggtgctg
+ttcggcttcgacgtgcagcgggtggcacagatgagcgacgcggagatcgacgaactgatg
+ctcgaccccggcatcattcgcaatcgggccaagctcaacgctgcgcggcagaacgcccag
+gcctggctggagctggacgacccggctgggttcctctggtccttcgtcggcggccagccg
+aagatcaaccatttcgccggtcgcgccgaggtgccggcgattaccccggaagccgaggcc
+atgagcaaggcgctgcgcaaggccggcttcaacttcgtcgggccgaccatctgctacgcc
+ttcatgcaggccagcggcatggtcatggaccatacccaggactgcgaccgttacgcccaa
+ctcgtcggctag
+>fig|287.15923.peg.11|K5B69_00055|   Lipid A biosynthesis lauroyl acyltransferase (EC 2.3.1.241)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+gtggagaaattcaaaggtgccctggtggtgggggccctacgcctgttcgcgttattgccc
+tggcgtgccgtgcaaggcgtcggggccggcataggctggctgatgtggaaattgccgaat
+cgatcccgcgaggtagtgcggatcaacctgtccaagtgcttccccgagttgtctgaaacc
+gaactggaaaagctggtcggacaaagcctgatggatattggccggaccctcaccgaaagt
+gcctgcgcctggatctggccgcctgaaaagtcgctgagatacatccgcgaggtcgaaggc
+atggaggtgctggaggaagcgctggcttccggcgatggcctggtcggcattaccagtcac
+ctgggaaactgggaagtactcaaccacttctattgctcctacgccaagccgatcatcttc
+tatcgtccgcccaagctgaaggcagtcgacgaattgctgaagaagcaacgcgtgcaattg
+ggcaaccgcgtcgcaccttccactccggagggtatcctcagcgtcatcaaggaagtgaag
+aaaggcggttgcgtaggaattcccgccgaccccgagcccgcgcgtaccgctgggctcttc
+gtgccctacctgggcaccactgccttgatcagcaagttcgtcccgcagttgctttcacgc
+ggcaaggcgcgtggagtgttcttccatgcggtgcgcctgcccgatggtagcggttacaag
+gtgatcctcgaagcggctccggcggacatgtacgacaaggacctggaagtgtctgtagca
+gccatgagccgcgagttggcgaagtatgtacgagcctatcccagccagtacatgtggagc
+atgaaacgcttcaagaaccgcccggatggcgagaaaaaatggtactga
+>fig|287.15923.peg.8|K5B69_00040|   Glycyl-tRNA synthetase beta chain (EC 6.1.1.14)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+atgatgagcgccaaggatttcctggtcgaactgggcaccgaagagctgccgccaaaagcc
+ctcaacagcctcggcgaagccttcctcagcggtatcgagaagggcctcaaggctgccggt
+ctgagctatgccgctgcgcgtttctatgcggcgccgcgccgtctcgccgtgctggtcgag
+caactcgccgtgcagcagcccgaccgtaccgtcaacctagacggtccgccgctacaggcc
+gccttcgacgccagcggtaacccgacccaggccgccctgggcttcgccaagaagtgcggc
+gtggatctgcagcagatcgacaagagcggtccgaagctgcgcttcagccggaccatcgcc
+ggccaaccggccgccggcctgctgcctggcatcgtcgaggcctcgttgaacgaactgccg
+attcccaagcggatgcgctgggcagctcgccgcgaggagttcgtgcgtccgacccaatgg
+ctggtgatgctgttcggcgacgatgtggtcgagtgcgagatcctcgcccagaaagccggg
+cgcgaatcccgtggccaccgcttccacaatccggacaatgtgcgtatttccagcccggca
+gcgtatctggaagacctgcgcggcgctcatgtgctggccgatttcgccgagcgccgcgag
+ctgatcgccaagcgcgtggccgaactggccgccgagcaacagggcagcgccatcgtgccg
+ccgagcctgctcgacgaagtgactgcactggtcgagtggccggtgccgctggtctgctcc
+ttcgaggagcgcttcctcgaggtcccgcaggaagccctgatcaccaccatgcaggacaac
+cagaaatacttctgcctgctggacgccaacggcaagctgctgccgcgcttcatcaccgtc
+gccaacgtcgagagcaaggcgccggagaacatcgtcagcggtaacgagaaggtggttcgc
+ccgcgcctcaccgacgccgagttcttcttcaagcaggacaagaagcagccgctcgaaagc
+ttcaatgagcgcctgcgcaacgtagtgttccaggcccagctcggcaccgtgttcgagaag
+gcccagcgcgtctccggcctggccgcctacatcgccgaacgtataggcggcaatgcgcag
+aacgccgcgcgcgccggcatcctgtccaagtgtgacctggcgaccgagatggtcggcgag
+ttccccgaaatgcagggcatcgccggctactactacgccacccacggcggcgaagcggaa
+gacgtcgccctggccctcaacgagcagtacatgccgcgcggcgccggcgccgagctaccc
+tcgaccctgaccggcgccgccgtggcggtggccgacaagctcgataccctggtcggtatc
+ttcggcattggcatgcttcccaccggcagcaaggacccctacgcgctgcgccgcgctgcg
+ctgggcgtgctgcgcatcctcatcgagaagcagctcgacctggacctggtagccgcggtc
+aacgccgccgtcgagcaatacggcgacaaggtcaaggccgccggcctggccgagcaggtg
+ctggacttcgtgttcgaccgcctgcgcgcgcgctacgaggacgaaggcgtggacgtggcc
+gtgtaccagtcggtgcgcgcgctcaagccaagctcgccgctggacttcgaccagcgcgta
+caggccgtccaggccttccgccagttgcctgaagccgaggccctggccgcggcgaacaaa
+cgggtgtcgaatattctcgccaagtccgaggacgaggttccgccgaacgtggatgccagc
+ctgctggtggaagccgccgagaaggccctgggcagcgccgtggcgaacgccgaaagcgaa
+gtcgcgccgctggcagcggcacgcgactatcgcgccgcgctggcccgcctggcggccttg
+cgcgagccggtggatacgttcttcgccgatgtgatggtcaatgtcgacgacgcggcggtg
+cgcgccaaccgctatgcgctgctggccaagctgcgcgggtcgttcctcggggtggcggac
+atctcgctgctcggctga
+>fig|287.15923.peg.12|K5B69_00060|   hypothetical protein   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+atggataatcaacgacaatacccacgaaccccgctcaagtgccgaatccgtatcagtcac
+ccgctatttggcgagctgatggcgcagacacgcgacctgtccgacaccggggtctatgtc
+aaacacccggagctgacccagctcccaacaggcagtgtcgttactggccaggtacaggac
+ttgccgatcgacgcgccgatcctgcagatggaagtcgtgcgagtcgatgcggaaggcgtc
+ggcctgcgctttctcagcgaagcgtga
+>fig|287.15923.peg.9|K5B69_00045|   Glycyl-tRNA synthetase alpha chain (EC 6.1.1.14)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+gtgagccagactacgcccgccgtgcgcaccttccaagacctgattctcgccctgcagaac
+tactgggccgagcagggctgcgtggtgctgcagccctacgacatggaagtgggcgccggc
+accttccacaccgccaccttcctccgcgccatcggcccggagacctggaacgccgcctac
+gtccagccgagccgccgccccaccgacggtcgctacggcgagaaccccaaccgcctgcag
+cactactaccagtttcaggtggtcctgaagccgaacccggagaacttccaggagctgtac
+ctcggctcgctgaaagccatcggcatcgacccgctggtccacgacatccgcttcgtcgag
+gacaactgggagtcgccgaccctcggcgcctggggcctgggttgggaaatctggctgaac
+ggcatggaagtcacccagttcacctacttccagcaggtcggcggcatcgagtgctatccg
+gtcaccggcgagatcacctacggcctggagcgcctggccatgtacctgcagggcgtggac
+tcggtctacgacctggtctggaccgacggcccgttcggcaaggtcacctatggcgacgtg
+ttccaccagaacgaggtggagcaatccactttcaacttcgagcacgccaacgtgccgaag
+ctgttcgaactgttcgacttctacgaaagcgaagccaaccgcctgatcgcgctggagctg
+ccgttgccgacctacgagatggtcctcaaggcttcgcataccttcaacctgctggatgcg
+cggcgcgccatctcggtcaccgagcgccagcgctacatccttcgcgtgcgtaccctggcc
+cgcgccgtggcgcagagctacctgcaggcccgcgcgcgcctcggcttccccatggccacc
+cccgaattgcgtgacgaagtactggccaagctgaaggaggccgaatga
+>fig|287.15923.peg.14|K5B69_00070|   hypothetical protein   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+atgtcgaagcaagagcgttcagtcccgtcctatgtcgaatacccatacgagcaagcgatt
+ctctacgttcaccggaacgcctccgccaatgagatgctcgaatccgtacaggagcgcctc
+agggctctcctcggcctcctccatgccttggaaaggatcgaagtgcggacagggcagggc
+gttcccattcagcgcgtggcgcacatcctggtcacgctcggcggcgatgccctgacgctg
+ctcacggccgcgcaccgggctaccacctcctga
+>fig|287.15923.peg.15|K5B69_00075|   FIG140336: TPR domain protein   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+atgatgatcgaaggtctggaaaagatgctggccaaaggcgtggacaatgcgctgctgcgc
+ttcggcctgggcaagggctacctggacgcgggcgacgccgaacgcgcggcggaacacctc
+cagcgctgcgtagagcaggacccgaagtattccgccggctggaaactgctgggcaaggcg
+cgccaggctgccggcgatctcgcgggcgcccggcaggcctgggagcagggcctggcaact
+gccgcgacgcatggcgacaagcaggccgaaaaggaaatgacggtgttcctgcgcaagctt
+gacagggcgagaacctga
+>fig|287.15923.peg.13|K5B69_00065|   Putative preQ0 transporter YhhQ   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+atgtcagcctcttctccggcggcctggcgcggcaccctggccggcctgatcgccttccac
+atcttcatcatcatcgccagcaactacctggtgcagttgccgatcaccctgtttggctgg
+cacaccacctggggcgccttcagctttccgttcatcttcctggctaccgacctcaccgtg
+cgcctgctgggcaagggccctgcccggctggtcatcgcccgggtcatgatcccggcgttg
+atcgcctcctacgtagtctcggtgttattccaggaagcggcgttccgtggtttctctgcg
+ctgctcgagttcaacaccttcgtcgcccggatctccctggcaagcttcctcgcctatgtg
+ctcggacagatcctcgatatccaggtattcgaccgcctccgtcgttcccggcactggtgg
+accgcgccagtcgcgtcgaccatcctcggcaacctgctggacacctttaccttcttcttc
+gtggcgttctggcgtagcgacaatccgttcatggcgcagcactgggtggaaatcgccacg
+gtggactacggagtgaagctgagtatcagccttctgctgttcgtgccgctctacggcatg
+ctactcaacggcatcctgaagatgctgccggggcggccgcagagcaacgcttga
+>fig|287.15923.peg.16|K5B69_00080|   Trk potassium uptake system protein TrkA   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+atgaaaatcatcatcctcggtgccggccaggtcggcggcacactggccgagcacctggcc
+agcgaagccaacgacatcaccgtggtcgacaccgacggcgaccgcctgcgcgacctcggc
+gaccgcctcgacatccgcaccgtgcaaggcaaggcctcgttccccacggtgctgcgccag
+gccggcgccgacgacgccgacatgctggtggcggtgaccaatagcgacgagaccaacatg
+gtcgcctgccaggtcgcctacaccctgttcaacaccccgaccaagatcgcccgcgtccgc
+gagccggcctacctgacccgtaccgggctgttcgacaacgaggcgatcccggtggacgtg
+ctgatcagcccggagcaggtggtcaccaactacatcaagcgcctgatcgaacaccccggc
+gcgctgcaagtcatcgacttcgccgagggcaaggcgcagttggtcgggatcaaggcctac
+tacggcggccctctggtagggcaggagctgcgccagctgcgcgagcacatgccgaacgtg
+gatacccgcgtcgccgcgatctaccgccgcaaccggccgatcattccccagggcgacacg
+gtgatcgaggccgacgacgaagtcttcttcatcgccgccaaggcccatatccgcgcggta
+atgggcgagatgcgcaggctcgacgacagctacaagcggatcatcatcgccggcggcggc
+aatgtcggcgagcgcctggccgaggccatcgagagccgctaccaggtaaagatcatcgag
+cgcagcccgctgcgctgccggcacctctcggataccctggacagcaccatcgtgctcaac
+ggcagcgcttccgaccgcgacctgctgctggaggaaaacatcggcgagaccgacgtgttc
+ctcgccctgaccaacgacgacgaggccaacatcatgtcctcgctgctggccaagcggctc
+ggcgcgagcaaggtgatgaccctgatcaacaaccctgcctatgtcgacctggtgcaaggc
+ggcgagatcgacatcgccatcagcccgcaactggcgaccatcggcaccctgctggcccac
+gttcgccgcggcgacatcgagagcgtacactcgctgcgccgcggcgcagccgaagcgatc
+gaagtggtagcccatggcgacgccaagtcgagcaaggtgatcggtcgctcgatcaacgag
+atcaagctgccgccgggcaccaccatcggcgcgctggtgcgcgacgaggaagtgctgatc
+gcccatggcgacacccgcatcgagagcggcgaccacgtgctgctgttcctggtcgacaag
+aaatacatccgcgacgtcgagcgactgttccaggccggcctgacgttcttctga
+>fig|287.15923.peg.17|K5B69_00085|   16S rRNA (cytosine(967)-C(5))-methyltransferase (EC 2.1.1.176)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+atgaacccgcgtctcgccgcctgccaggcgctggccgcggtgctcgccggacgcgcctcg
+ctgtctggcgcgttgccgccgcaactggacaaggtcgccccgcgcgatcgcggcctgacc
+caggagctggccttcggcgctgcgcgctggcaaccgcgcctgcaggccctggccgcgcgc
+ctgttgcagaagccgttcaaggccgccgacaccgatatccacgccctgctactgatcggc
+ctctaccagttgctctacacgcggattccgccgcacgccgcgatcggcgagaccgtcggc
+tgcgccgacaagctgaagaagggctgggccaagggcgtgctcaacgccgtgctgcgccgc
+gcgcagcgcgaaggcgagacgctgctggccgaggtcgaccgcgatccctcagcgcgcctg
+ggacatccgcgctggctgctgaaagcgctcaagcaggcctggccggagcagctcgacgcg
+ctctgcgcagcgaacaacgcacacccgccgatgaccttgcgggtcaatcggcgccacggc
+gagcgcgatgcctacctggccgaactcgccgaagccggaatcaaggcccgcgcctgcgac
+tacagccgcgacggcatccagctcgccgcgccgcgcgacgtgcgcgaactaccgggcttc
+gcggagggtcgcgtcagcgtccaggacgaagccgcgcaactggccgccgagcagctcgaa
+agcgcgcccggccagcgtgtcctcgacgcctgctgtgcgcctggcggcaagacctgccac
+ctgctggaaacccagccgggactggccgaagtggtcgccgtcgacctcgaggagagccgc
+ctggtaagggtccgggaaaacctccagcggctcggcctgcaagccagcctggtcgccgcc
+gacgccagggccaccggggagtggtgggacggcaagccgttccagcgcatcctcctcgac
+gcgccgtgctcggccaccggggtgatccgccgccacccggacatcaagctggcgcgcaag
+ccggaagacatcgccgccctggcgcacctgcagggtgaattgctcgacgcgctgtggcct
+accctggaagtcggtggcgtactgctctacgccacctgttcggtgatgccggcggaaaac
+agcgacagcatcgccgccttcctcgcccgcacgcccggcgcccgcgaactggaccttccc
+ggcccctggggcatgaaacagccccacggccgccagttgctgccgcaggtggagggccac
+gatggcttctactatgccaagctgatcaagatatccgcccgttga
+>fig|287.15923.peg.18|K5B69_00090|   Methionyl-tRNA formyltransferase (EC 2.1.2.9)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+atgagccaagcattgcgcatcgtcttcgccggaaccccggaattcgccgccgagcatctc
+aaggccctgctcgacaccccacatcggatcgtcgccgtctacacccagcctgaccggccg
+gccggccgcgggcagaaactgatgcccagcgcggtgaagaacctggccctggagcatggc
+ctgccggtcatgcagccgcagagcctgcgtaatgccgaggcccaggcggagctggcggcc
+ctgcgcgcggacctgatggtggtggtcgcctatggcctgatcctgccccaggcggtactc
+gatatcccgcgcctgggctgcatcaacagccacgcctcgctgctgccgcgctggcgcggc
+gccgcgccgatccagcgcgcggtggaagccggcgacgcggagagcggcgtcaccgtgatg
+cagatggaagcagggctcgacaccggcccgatgctgctcaaggtgagcacgccgatttcc
+gccgcggacaccggcggcagcctgcacgaccggctcgccgcgctcggcccgaaagcggtg
+atcgaagccatcgccggcctggccgccggcaccctgcatggcgagatccaggacgacgcc
+ctggccacctacgcgcacaagctgaacaaggacgaggcacgcctcgactggagccgtccg
+gccgtcgaactggagcgccaggtccgcgccttcaccccctggccggtctgccacaccagc
+ctcgccgatgcgccgctgaaagtcctcggcgccagcctggggcagggcagcggggcgccc
+ggaaccatcctcgaggccagccgcgacggcctgctggtcgcctgcggcgaaggcgccctg
+cgcctgacccgcctgcaattgcctggcggcaagccactggccttcgccgacctctacaac
+agccgccgcgagcaattcgccgccggccaggtgctcggccaatga
+>fig|287.15923.peg.20|K5B69_00100|   Uncharacterized protein with LysM domain, COG1652   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+atgaggaaatcactagtcgcccttctgctccttgccgcgagcggtctggcgcaggcccag
+gtcgacctcagggaagggcatccggaccgctacacggtggtcaggggcgataccctgtgg
+gacatctcggggaaattcctccgccagccatggaagtggccggaactctggcacgccaac
+ccgcagatccagaatccccacctgatctaccccggcgacacactcagcctggtctacgtc
+gatggccagccgcgcctggtgctgaaccgtggcgaatcgcgcgggaccatcaagctgtcg
+ccgaagatccgcagcacgccgatcgccgaggccatcccgaccatcccgctggacaagatc
+aacagcttcctgctggccaaccgcatcgtcgatgacgagaagaccttcaccagtgcgccg
+tacatcgtcgccggcaacgccgagcggatcgtcagcggcaccggcgaccgcatctatgcc
+cgcggcaagttcgccgacggccagccggcctatggcatcttccgccagggcaaggtctac
+atcgatccgaagaccaaggaagtcctcggcatcaacgccgacgacatcggcggcggcgag
+gtggtggccaccgaaggcgacgtcgcgaccctggcgctgacccgcaccacccaggaagtg
+cgcctgggcgaccgcctgttccccaccgaggagcgtgcggtgaattccaccttcatgccc
+ggcgagccgagccgcgaggtgaagggcgaaatcatcgacgtaccgcgcggcgtgacccag
+atcggccagttcgacgtggtcaccctgaaccgtggccagcgcgacgggctggccgagggc
+aacgtgctggcgatctacaaggtcggcgagacggtgcgcgaccgcgttaccggtgagtcg
+gtgaagattcccgacgaacgcgccggcctgctgatggtgttccgtacctacaagaagctg
+agctacgccctggttctgatggccagcaggccgctctcggtaaccgacagggtgcagaat
+ccctga
+>fig|287.15923.peg.19|K5B69_00095|   Peptide deformylase (EC 3.5.1.88)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+atggccatcctgaacattctcgaattccccgatccgcgcctgcggaccatcgccaaaccg
+gtggaggtggtcgacgacgcggtgcgccagctgatcgacgacatgttcgaaaccatgtac
+gaagccccgggcatcggcctcgccgcgacccaggtgaacgtgcacaagcgcatcgtggtc
+atggacctcagcgaagacaagtccgagccgagggtattcatcaaccccgagttcgaaccg
+ctgaccgaggatatggaccagtaccaggaaggctgcctgtcggtacccggcttctacgag
+aacgtggaccgaccgcagaaggtccggatcaaggccctcgaccgcgatggcaaccccttc
+gaggaagtcgccgaaggcctgctggcggtatgcatccagcacgaatgcgaccacctcaac
+ggcaagctgttcgtcgactacctgtccaccctcaagcgcgaccgcatccgcaagaagctg
+gaaaagcagcatcgacagcaggcgtga
+>fig|287.15923.peg.2|K5B69_00010|   DNA polymerase III beta subunit (EC 2.7.7.7)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+atgcatttcaccattcaacgcgaagccctgttgaaaccgctgcaactggtcgccggcgtc
+gtggaacgccgccagacattgccggttctctccaacgtcctgctggtggtcgaaggccag
+caactgtcgctgaccggcaccgacctcgaggtcgagctggttggtcgcgtggtactggaa
+gatgccgccgaacccggcgagatcaccgtaccggcgcgcaagctgatggacatctgcaag
+agcctgccgaacgacgtgctgatcgacatccgtgtcgaagagcagaaacttctggtgaag
+gccgggcgtagccgcttcaccctgtccaccctgccggccaacgatttccccaccgtagag
+gaaggtcccggctcgctgaacttcagcattgcccagagcaagctgcgtcgcctgatcgac
+cgcaccagcttcgccatggcccagcaggacgtgcgttactacctcaacggcatgctgctg
+gaagtgaacggcggcaccctgcgctccgtcgccaccgacggccaccgactggccatgtgc
+tcgctggatgcgcagatcccgtcgcaggaccgccaccaggtgatcgtgccgcgcaaaggc
+atcctcgaactggctcgtctgctcaccgagcaggacggcgaagtcggcatcgtcctgggc
+cagcaccatatccgtgccactactggcgaattcaccttcacttcgaagctggtggacggc
+aagttcccggactacgaacgcgtactgccgcgcggtggcgacaagctggtggtcggcgac
+cgccagcaactgcgcgaagccttcagccgtaccgcgatcctctccaacgaaaagtaccgc
+ggcattcgcctgcagctttccaacggtttgctgaaaatccaggcgaacaacccggagcag
+gaggaggccgaggaagaagtgcaggtcgagtacaacggcggcaacctggagatcggcttc
+aacgtcagttacctgctcgacgtgctgggtgtgatcggtaccgagcaggtccgcttcatc
+ctttccgattccaacagcagcgccctggtccacgaggccgacaatgacgactctgcctat
+gtcgtcatgccgatgcgcctctaa
+>fig|287.15923.peg.22|K5B69_00110|   Threonylcarbamoyl-AMP synthase (EC 2.7.7.87)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+atgatcagcagctttcgtgcgcaatgcgccgcccgggtcgtccgcgagggcggcgtgatc
+gcctatcccaccgaggcggtatgggggctcggctgcgacccgtggaacgaggatgcggtg
+tatcgcctgctggcgctgaaggcgcggccggtggaaaagggcctgatcgtggtggcggcg
+aacatccaccagctcgacttccttctcgaagacctgccggacgtctggctggaccgcctg
+gccggtacctggccggggccgaacacctggctggtgccgcaccaggagcgcctgccggag
+tgggtcaccggcgtccacgagagcgtcgccgtgcgggtcaccgaccatcccctggtacag
+gaactgtgccatctcaccggtccgctgatctccacctcggccaatccggccgggcgcccg
+gcggcgcgcacgcggctgcgggtggagcaatacttccacgacgagctggacgctatcctc
+ggcggcgcccttggcgggcgccgcaaccccagcctgatccgcgacctggtgaccggacag
+gtcatccgcccggcctga
+>fig|287.15923.peg.21|K5B69_00105|   Rossmann fold nucleotide-binding protein Smf possibly involved in DNA uptake   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+atgaagaaccattctccagccgaactggaagcacggctgcgcctgcatggcctgcccgaa
+ctgggacccatgcgcttcctgcgcttgatcgaggccttcggttcggcctcttccgcgctt
+gccgcgccagccggcgcctggcgcaccctgggagtgcctgccgaggccgccgccgcgcgg
+cgcagcccggcggtgcgggaagcggcgggtgaagccctgcgctggctggaaggtccgcgc
+aggcacctgctgatgtgggacgacccgggatacccggcactgctcgccgaagtcgccgat
+gccccgccgctgctgtacgtcgaaggcgctccggagactctggaacggccgcaactggcg
+atggtcggcagccgccgcgccagccccgccgggctgggcaccgcccggagctttgcgcgc
+agcctggcgcagggcggcttcgccatcaccagcgggctggccctgggcatcgatggcgcc
+gcccacgagggcgcgctggaggctggcggcgcgaccgtggcagtcctcggcaccggcctg
+cgcaggctctatccgcggcgccacgaggcgctggcgcggcgcatcgtcgagggtggcggc
+gcgctggtttcggagctgccgctggacagcccgccgctgccggcaaactttccccggcgc
+aaccgcatcatcagcggactctcgctgggtgtgctggtggtcgaggcaagtcccgccagc
+ggctcgctgatcaccgcgcggctggcggcggaacaggggcgcgaggtgtacgccattccg
+ggttccatccaccatcccggcgcacgtggctgccaccaactgattcgcgatggcgcgctg
+ctggtggaaagcgtcgggcacgtgctcgaagcactgcgcggctgggcgcaggcggagcca
+gcggaagcgccggcgcagcccctgccccaccctttgctggcgctgctgcgcgccgcgccc
+tacaccagcgaaggcctggccgccgccagcggcatgacgctgcccgatgtgctggcgacg
+ctcagcgaactggaactcgacggccgggtcgcctgcgaggccggcacctgggtgcatcgc
+tccggctga
+>fig|287.15923.peg.24|K5B69_00120|   Coproporphyrinogen III oxidase, aerobic (EC 1.3.3.3)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+gtgaccgaccgtatcgccgctgtcaaaacctacctgctcgacctgcaagaccgcatctgc
+gccgccctcgagacggaggacggcaaggcccgcttcgccgaggacgcctgggagcgtccg
+gccggtggcggcggacggacgcgggtaatcggcgacggcgcattgatcgagaagggcggg
+gtgaatttttcccacgtcttcggcgatagcctgccgccctcggccagcgcccatcggccg
+gaactggccgggcgcggtttccaggcgctcggcgtgtcgctggtgatccatccggaaaac
+ccccacgtgccgacgtcccatgccaacgtgcgtttcttctgcgccgagaaggaaggcgag
+gagccggtctggtggttcggcggcggcttcgatctgaccccctactacgcccacgaggaa
+gactgcgtgcattggcaccgggtcgctcgcgacgcctgcgcgccgttcggcgcggacgtc
+tacccgcgctacaaggaatggtgcgaccgctacttccacctcaagcaccgcaacgagccg
+cgcggcatcggcggcctgttcttcgacgacctcaaccagtgggacttcgacacctgcttc
+gccttcatccgcgccatcggcgatgcctatatcgacgcctacctgccgatcgtccagcgc
+cgcaagcacacgccgttcgatgaacggcagcgagagttccaggcctatcgtcgcggtcgc
+tatgtggagttcaacctggtcttcgatcgtggcaccctgttcggcctgcagtccggcggc
+cgtaccgaatcgatcctgatgtcgttgccgccgcaggtgcgctggggctatgactggaaa
+cccgagccgggcagcgaggaagcgcgcctgaccgagtatttcctcgccgaccgcgattgg
+ctcgccggccagccctga
+>fig|287.15923.peg.23|K5B69_00115|   Quinone oxidoreductase (EC 1.6.5.5)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+atggccaagcgcatccagttcgctgcctacggcggccccgaagtcctcgaataccgcgac
+taccaacccgccgagccgggcccccgggaagtccgcgtgcgcaatcgcgccatcggcctg
+aacttcatcgacacctactaccgcagcggcctctatccggcccccggcttaccctcggga
+ctgggtagcgaaggtgccggcgaggtcgaggcggtgggcagcgaagtgacccgtttcaag
+gtcggcgaccgcgtcgcctacgccaccggcccgctgggcgcctacagcgaactgcatgtg
+ctggcggaggagaagctggtccacctgcccgacggcatcgacttcgaacaggccgccgcg
+gtgatgctcaaggggctcaccacccaatacctgctgcgccagacctacgaactgcggggc
+ggcgaaaccattctcttccatgccgccgcgggcggcgtgggcctgttcgcctgccaatgg
+gccaaggcccttggagtgcaactgatcggcaccgtcagctcgccggaaaaggcgcgcctg
+gccaggcagcacggtgcctgggagaccatcgactacagccacgagaacgtggcgtggcgg
+gtgctcgaactgaccgacgggaagaagtgcccggtggtctacgactcggtgggcaaggat
+acctgggaaacctcgctggactgcgtggcgccgcgcggcttgctggtcagcttcggcaac
+gcctcggggccggtgaccggggtcaacctcggcatcctctcgcagaagggttcgctgtac
+gtgacccggccgaccctgggcagctacgccgataccccggaaaaactccaggcgatggcc
+gacgagctgttcggcctgatcgagcgcggcgacatccgcatcgagatcaaccagcgcttc
+gccctggccgaagcagccagggcgcataccgaactggccgcacggcgaaccaccggctcg
+accgtactgttgccctga
+>fig|287.15923.peg.1|K5B69_00005|   Chromosomal replication initiator protein DnaA   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+gtgtccgtggaactttggcagcagtgcgtggatcttctccgcgatgagctgccgtcccaa
+caattcaacacctggatccgtcccttgcaggtcgaagccgaaggcgacgaattgcgtgtg
+tatgcacccaaccgtttcgtcctcgattgggtgaacgagaaatacctcggtcggcttctg
+gaactgctcggtgaacgcggcgagggtcagttgcccgcgctttccttattaataggcagc
+aagcgtagccgtacgccgcgcgccgccatcgtcccatcgcagacccacgtggctcccccg
+cctccggttgctccgccgccggcgccagtgcagccggtatcggccgcgcccgtggtagtg
+ccacgtgaagagctgccgccagtgacgacggctcccagcgtgtcgagcgatccctacgag
+ccggaagaacccagcatcgatccgctggccgccgccatgccggccggagcagcgcctgcg
+gtgcgcaccgagcgcaacgtccaggtcgaaggtgcgctgaagcacaccagctatctcaac
+cgtaccttcaccttcgagaacttcgtcgagggcaagtccaaccagttggcccgcgccgcc
+gcctggcaggtggcggacaacctcaagcacggctacaacccgctgttcctctacggtggc
+gtcggtctgggcaagacccacctgatgcatgcggtgggcaaccacctgctgaagaagaac
+ccgaacgccaaggtggtctacctgcattcggaacgtttcgtcgcggacatggtgaaggcc
+ttgcagctcaacgccatcaacgaattcaagcgcttctaccgctcggtggacgcactgttg
+atcgacgacatccagttcttcgcccgtaaggagcgctcccaggaggagttcttccacacc
+ttcaatgcccttctcgaaggcggccagcaggtgatcctcaccagcgaccgctatccgaag
+gaaatcgaaggcctggaagagcggctgaaatcccgcttcggctggggcctgacggtggcc
+gtcgagccgccggaactggaaacccgggtggcgatcctgatgaagaaggctgagcaggcg
+aagatcgagctgccgcacgatgcggccttcttcatcgcccagcgcatccgttccaacgtg
+cgcgaactggaaggtgcgctgaagcgggtgatcgcccactcgcacttcatgggccggccg
+atcaccatcgagctgattcgcgagtcgctgaaggacctgttggcccttcaggacaagctg
+gtcagcatcgacaacatccagcgcaccgtcgccgagtactacaagatcaagatatccgat
+ctgttgtccaagcggcgttcgcgctcggtggcgcgcccgcgccaggtggccatggcgctc
+tccaaggagctgaccaaccacagcctgccggagatcggcgtggccttcggcggtcgggat
+cacaccacggtgttgcacgcctgtcgtaagatcgctcaacttagggaatccgacgcggat
+atccgcgaggactacaagaacctgctgcgtaccctgacaacctga
+>fig|287.15923.peg.27|K5B69_00135|   Parvulin-like peptidyl-prolyl isomerase   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+atgcaccgactgctctctgatcgcgcccggggctggcgtcgcgcactgtgcgggatcgtc
+ctcgggctgctggcgtggagcgcccatggcgtccccgccaaggcgccgcaggatctgcgg
+atcgacggcgaggtgctgccggggagaagcatcgacttgctcgagcaggccctgtcgcgg
+gtcaagttcaacaccgacccgcagcagttgcgccgtggcctggtggaaaaccgcctgctg
+gcgcgcgcggtggaagaccagctcaccgcgcagagccgcgccgatctcgacgccagcgta
+gagatcgaggccggcaacctgctcgaacaggtatacggcaggcgctaccgcgaggacctc
+gggccatacctgcgccagccccgggccctgagcgcggagcgtttgcgcgaggtgctggcg
+ccgaggagccgcggcctggtggaaaacagcctgctgctggacgagacgcagcgccgcgag
+gcggccggggtcgagctgatcggctggcagtttcccggccagccggcacaggtcctcgac
+ctgctatcgctgtacgaaggcgacaacgtccagggccaggtggaattgcaacagggcaac
+ctcgcttacctggcgcgccaggtccagacccgtatccgccgcgactacctctggtaccgc
+ctggcccgggacggcttcggcccggcagagcggcagggcgtgaggaccctggtgcgggac
+aagctggtgcgccatcgctatctgcaccagatcggcctctacagtgatctccaccatgag
+tccgatgcgctgcgggaactcgccggcaaggtcagcgacaaggacgccgaggcctactat
+cggcgcaacctggagcgttaccgcaacgtcgcgcaggtgcaggcggcgcatatccgcctg
+gccgaccaggcgagcgcggacaaggtctacgccgagttgcgcggcggcctggccttcgac
+gaggcggtacgccgctattccctggccgacgacagggaccgcgacccgcccggcgaccta
+ggcctgatacggccccaggacggccggctcgacctgctgcgcaagactgcgctgatccag
+aaggccgatacggtttcccagccgatgcgcatcgacggcgcgttcgagatcgtccgggtg
+cgtagccgcgaggatcgccagttgcccctcgacgaccgcagcgtgcgcttcgaggtgaac
+caggcggtggcgcgcgagcaactggcagcgcagttcgagacgcgcctgcgcaacctgctg
+gccggcgccagggtggaaggcctgtga
+>fig|287.15923.peg.3|K5B69_00015|   DNA recombination and repair protein RecF   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+atgtccctgacccgcgtttcggtcaccgcggtgcgcaacctgcacccggtgaccctctcc
+ccctcccctcgcatcaacatcctctacggcgataatggcagcggcaagaccagtgtgctc
+gaagccatccacctgctgggcctggcgcgttcattccgcagtgcgcgcttgcagccggtg
+atccagtatgaggaagcggcctgcaccgtattcggccaggtgatgttggccaacggcatc
+gccagcaacctggggatttcccgtgagcgccagggcgagttcaccatccgcatcgatggg
+cagaacgcccggagtgcggctcaattggcggaaactctcccactgcaactgatcaacccg
+gacagctttcggttgctcgagggagcgccgaagatccggcgacagttcctcgattgggga
+gtgttccacgtggaacctcggtttctgcccgtctggcagcgcctgcagaaggcgctgcgc
+cagcggaactcctggctccggcatggtaaactggaccccgcgtcgcaagcggcctgggac
+cgggaattgagcctggccagcgatgagatcgatgcctaccgcagaagctatatccaggcg
+ttgaaaccggtattcgaggaaaccctcgccgaattggtttcactggatgacctgaccctt
+agctactaccgaggctgggacaaggaccgggacctcctggaggtcctggcttccagcctg
+ttacgcgaccagcagatgggccacacccaggcgggaccgcagcgtgcggatcttcgcata
+cggttgtcaggtcataacgccgcggagattctctcgcgcggtcagcagaagctggtggta
+tgcgccctgcgcatcgcccaaggccatctgatcaatcgcgccaagcgcggacagtgcgtc
+tacctggtggacgacctgccctcggaactggatgagcagcatcgaatggctctttgccgc
+ttgcttgaagatttgggttgccaggtattcatcacctgcgtggacccgcaactattgaaa
+gacggctggcgcacggatacgccggtatccatgttccacgtggaacatggaaaagtctct
+cagaccacgaccatcgggagtgaagcatga
+>fig|287.15923.peg.26|K5B69_00130|   hypothetical protein   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+atgaaaaccttcgcccgcctggccgccggtctctgcatctgcgccatcgccagccaggcc
+aacgcctggtcgcaaccgacccacaagaacatcgtcaaggatgccctggccttcatgaac
+tcctcctacgccaccgaggagatgcgccaggcctaccggttctacgtgagcgccgccggc
+agcgaggcgcaggccggggagatcctcggccaggcggccttcgacgtggacgacttcaag
+gacacccgtctcggtggctggtgggtcggctacgaacacgcgccgctgtggggcgcggct
+tcgggcatcgtcaactacacctcgtactggcacttcctcaacctggcccgggacggcgac
+tcccatggcaacccccacggcggctacgactaccgctaccacaaggtcgacggcggcatc
+gccgacgtcgactggtacgccatggtctacctctacaaccgcgagctgaagcgcgaggac
+ttcgacaccaccgaggcgcactaccgccagggcacccgctcggactggcaggagcactac
+ggcgacttccagaccgccgccttccagccgatcgataacctcgccacctactggttcgag
+cagttccgcgccgcgccttcgctgcagaccatcggctatgccctgcatgccaccggcgac
+gtggcccagccgcaccatgtgtggatcacctcggccaacggccattccagctgggaaggc
+tgggtcgacgaccactacgccagcgagaagctcaacgacccggcggcggtggccaacctg
+gtggggcgctacgacccgagcaagagcatccgcgacctgctcacccagaccggccaggtc
+gcctacgcgcgccccgagccgctctacgacaccagctacgagacgcgcctgcgggtggcg
+aaggagctgattcccgagtccatcgccctgaccgtcaccgtactgaccaagggcgccaac
+agcttcgatgcaccgactgctctctga
+>fig|287.15923.peg.29|K5B69_00145|   Sulfate permease   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+atgtggacgcgcctgctgccgttcctcgcctggctaccggggctgcaccggggcatgctc
+gggcgcgaggcctgggtcggcctgaatggcgcaatcctggcactgccgcaatcgatggcc
+tatgcgctgatcgccggcctgccagcggaatacggcctgtacgcggcgatgctgccagtg
+gcgatcgcctgcctgtggggctcgtcgcgctacctggtgagcggtcccaccgcggcgatc
+tcggtgctgctgttcagttcggtggccccgctggcgccgctgggcagcccgcaatacgtc
+caggccgtgctgctgctgacctttctcgccggcgccttccagtggctgctcggcgtcctg
+cgcgtcgggtcgctggtcaatttcgtctcgcattcggtgatgctcggcttcacccttggc
+gcggcgctgctgatcgtcctcggccaactgccctatcttctcggcctggccgcgagcggg
+gagggcgcagcgccgggaaacggctggcggctgctggcgcggttcgccgagttcgatggc
+ccatcgctgctggtgggcggcttcagcttcgcgctcagcctgctggtcaggcgcctgcga
+ccgcgctggccggccctgctgcttggcttgctgggcggtgccacgctggtctgggcgcta
+cccgggaccttcgcctcggtagcccatgtgcaggccttatcgagcgcactgccgggctgg
+aatccgctggtcttcgattcccgatcgatcctcgacctgctacctgcggcggtggcctgc
+ggcatgctcgggctggtcaccagcctatcgatcgcccgcgccctggccgcgcgccaggga
+gacgcgttcgatgccaaccaggaggtccgcgcccagggcctgtcgaacctgctcgggcct
+tggctgtcggcgagcctgtcggcgggctccttcacccgctccgggctgaatctggaagcc
+ggtgcgcgctccccgctggcgggtgcgttttcggcgctctgggtggcactgctggccgtg
+ctcggtgcgcgcctgatcgagcatgtgccgttgccggcgatggccgcaggcatcctgctg
+atcgcctggggcctgatcgaccgcccagcgctccgcgcgctctaccgcagcggccgcgcc
+gaatgcctggtggccggcctaaccgccctggccacgctgctgttgccgctgcagaacgcc
+atctacgcgggagtgctggcgtcgctggtcttctacctgcggcgcacctcgacaccacgc
+gtactgcgccagcacaacgacgaggaagaagtgctgcgcatcgaaggctcgatcttcttc
+ggcgcctgcgactacctgcaacgcctcatgcgccaatgcgacaggccacggctggtgctg
+gacgcccgccaggtgaacttcatcgacttcgccggcgcagtgctgttgcagcaggaagcc
+cgccgcctgcacgccgagggccgccgcctggtattgcgccacgcccgcccgcaggtccgc
+gaagcgctgggccggcaggccgacgaaggctgccgcctgcactacgaaggctga
+>fig|287.15923.peg.28|K5B69_00140|   hypothetical protein   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+gtgaagcgctggctcggcgttgccctcggctgcagcgggctggcgatcgccctggcctgc
+gccggcgtgttgctggcgcctgccgatatggccgcttcctcgtcttctccgtcgccagcc
+aggacggttgcggcactgcccgcggtcgacgaccgtccgccgccgccggcgccggtgcga
+tcgcaagcggcagcaccggcgtacgaggcggagcctccggcggcggaactggatcgcgag
+caggcgatccagttcatgcagatgctgcgcgacgagggcgacccgcgcagcccgccgctc
+ggcggcctgcaaccacgccagggcgcgacggcgcaggagctggccgatccgaagcagtac
+caggccttcgaggaacgacagacccgcgaactggtacaggcctacaccagcggcgtacag
+cagataccggaaatccgcgcgcggatcgaggcggccgaacagggtggcgagcgcagcgcc
+gaggaaatcgacgaggctcgcgccgcccttggacagttggagatgatgcgcgacaagctg
+cagcgggaatcgccgcaactgctgcccggcgacagcgcaccgacatcgcctgcggcgccc
+tga
+>fig|287.15923.peg.25|K5B69_00125|   Shikimate 5-dehydrogenase I alpha (EC 1.1.1.25)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+atggaccgctattgcgtattcggcaaccccatcggccacagcaagtcgccgctgatccac
+cgcctgttcgccgagcagaccggcgaggcgctggtctatgacgcgcaactggcgccgctg
+gacgatttccccgggttcgcccggcgcttcttcgagcagggcaagggcgccaatgtcacc
+gtgccgttcaaggaagaggcctatcgtctggtggacgagttgagcgagcgggccacccgg
+gccggggcggtgaacaccctgatccgccttgccgacggtcgcctgcgcggcgacaacacc
+gacggcgccggcctgctgcgggacctgacggcgaacgccggggtcgagctgcgcggcaag
+cgggttctcctgctcggcgccggcggtgcggtgcgtggggtgctcgaacccttcctcggc
+gagtgcccggcggagttgctgatcgccaaccgcacggcgcggaaggccgtggacctggcc
+gagcggttcgccgacctcggcgcggtgcacggctgcggtttcgccgaggtcgaagggcct
+ttcgacctgatcgtcaacggcacctcggccagtcttgccggcgacgtgccgccgctggcg
+cagagcgtgatcgagcccggccgtaccgtctgctacgacatgatgtatgccaaggaaccg
+actgccttcaaccgctgggccgccgaacgcggtgcggcgcgtaccctggatggcctgggc
+atgctggtggagcaggccgccgaggcattcttcctctggcgcggcgtgcgtcctgcctcg
+gcgccagtgttggagacgctgcgccgacagttggcaactgtctga
+>fig|287.15923.peg.30|K5B69_00150|   Choline binding ABC transport system substrate-binding protein ChoX   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+atgaaccggcttcccacctgcctgctggccgcaaccctgttcctgggcagcgcctcgcta
+tacgccgaagaccccgcctgtgcccgcgtcaggctggccgatccaggctggagcgatatc
+gcggtgaccaacgccaccgccgcgtttctcctggaaagcctcggctaccaggtgaagatc
+gataccctgtcggtgccgatcatctatggcggcctgcgcgacggccaggtggacgccttc
+ctcggcggctggatgcccgcgcaccaggactatcacgacaagttcgtcgccagcggccag
+gtcgaacgcctcggtcgcaacctcgacggcacccgcttcaccctggcggtgccgcgctac
+gtctgggacgccggcgtacaccgcttcgaggacctcgccgcgcaagggcaacgcttcaac
+cgcaagctgtacgggatcggctccggcgcgccggccaatcagtcgatccagaagatgatc
+gacgccaaccagttcggcctcggcgactggaagctggtggagtccagcgagcaggcgatg
+ctcgccgaactcggccgggccgagaagcgccagcgctggctggtgttcctcggctggacg
+ccgcacccgatgaacatccgccatgacctgcgctacctggaaggcggcgagcagtacttc
+ggcgaccgcggccaggtctacaccctggcacgcaagggctacgccgcgcagtgcccaaac
+ccggcgcggctgctggccaacctgcgcttcgacctggacatggagaaccgcctgatgagc
+gacgcgctggaaggcacggcgactccggcctcggcgacccgcgcctggctcaaggccaac
+ccgcgggtgctcgaggcctggctgcaaggggtgaccagccgcgacggcggcgacgccctg
+gccgcggttcgcggccagccatag
+>fig|287.15923.peg.5|K5B69_00025|   Acyl-CoA:1-acyl-sn-glycerol-3-phosphate acyltransferase (EC 2.3.1.51)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+atgtcgacagtgcaggccatcagaaccgtcctcttttacctgctgctgtccgccagcgcg
+ttcgtctggggcaccctcagcttcttcatcgcgccgatcctgccgttccgcgcccgctac
+cgcttcgtggtacagaactggtgccgcttcgcgatctggctgacccgcgtggtcgccggc
+atccgctacgaggtgcgcggactggagaacatcccggaaaagccctgcgtgatcctctcc
+aagcaccagagcacctgggaaaccttcttcctctccggcttcttcgagccactcagccag
+gtactcaagcgcgagctgctctacgtgccgttcttcggctgggccctggccctgctcaag
+cccatcgccatcgaccgcagccagcccaagctggccctcaagcaactggccaagcagggc
+gacgagtgcctgaagaaaggcgcctgggtgctgatcttcccggaaggcacgcgtattccg
+gtggggcagatgggcaagttctcccgcggcggcaccgccctggcggtcaacgccgggcta
+ccggtactgccgatcgcccacaacgccgggcagtattggcccaaggccggctgggccaag
+tacccgggcaccatccaggtggtgatcggcccggccatgcacgccgaaggcgaaggcccg
+cgcgccatcgccgagctaaaccagcgcgccgaagcctgggtcagcgagaccatggccgag
+atcagccccatccagcagcgggtcagccatccggagccgtcggtggtctcgtga
+>fig|287.15923.peg.6|K5B69_00030|   Histidinol-phosphatase (EC 3.1.3.15)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+atgtcccgttccctgctgattctcgaccgcgatggagtcatcaacctcgactccgacgat
+tacatcaagaccctcgacgagtggatccccatccccagctcgatcgaggccatcgcccgc
+ctgagccaggccggctggaccgtcgcggtggctaccaaccagtccggcatcgcccgtggc
+tattacgacctggcagtgctcgaggccatgcatgcgcgcttgcgcgaactggtcgcggag
+cagggcggcgaggtcggcctcatcgtctattgtccgcatggaccggacgacggttgcgac
+tgccgcaagccgaagccgggtatgctgcggcagatcggcgagcactacggggtcgatctg
+tcgggtatctggttcgtcggcgacagcatcggtgacctggaggcggcgcgggccgtcgat
+tgtcagccggtattggtaaagaccggaaaaggtgtacgtacgctgggcaagcccttgcca
+gagggcaccctgatattcgacgatctggcggcagtcgccagcgcattacttcagtaa
+>fig|287.15923.peg.4|K5B69_00020|   DNA gyrase subunit B (EC 5.99.1.3)   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+atgagcgagaacaacacgtacgactcttccagcatcaaggtgctgaaggggctggatgcc
+gtacgcaagcgccccggcatgtacatcggcgacaccgacgatggcaccggtctgcaccac
+atggtgttcgaggtggtggataactccatcgacgaagcgctggccggttactgcagcgaa
+atcagcatcaccatccatacggatgagtcgatcactgtccgcgacaatggacgcggtatt
+ccggtggatatccacaaggaagaaggggtttctgcggcggaagtgatcatgaccgtcctc
+cacgccggcggcaagttcgacgacaacacctacaaggtgtccggcggcttgcacggtgtg
+ggcgtctcggtggtgaacgcgctgtcccatgaactacgcctgaccatccgtcgccacaac
+aaggtctgggaacaggtctaccaccacggcgttccgcagttcccactgcgcgaagtgggc
+gagaccgatggctccggcaccgaagttcacttcaagccgtccccggagaccttcagcaac
+atccacttcagttgggacatcctggccaagcgcatccgcgagctgtccttcctcaactcc
+ggcgtcggcatcctgctgcgcgacgagcgtaccggcaaggaggagctgttcaagtacgaa
+ggcggtctgaaggccttcgtcgagtacctgaacaccaacaagaccgcggtgaacgaggta
+ttccacttcaacgtccagcgtgaagaggacggcgtgggtgtggaagtcgccttgcagtgg
+aacgacagcttcaacgagaacctgctctgcttcaccaacaacatcccgcagcgtgacggc
+ggtacccacctggccggtttccgttcggcgctgacgcgtaacctgaacaactacatcgag
+gccgaaggcctggcgaagaagttcaagatcgccaccaccggcgacgatgcccgcgaaggc
+ctcaccgcgatcatctcggtgaaggtaccggacccgaagttcagctcgcagaccaaggac
+aagctggtctcctccgaggtgaagactgcggtggaacaggagatgggcaagtacttcgcc
+gacttcctgctggagaatcccaacgaagccaaggccgtggtcggcaagatgatcgacgcc
+gcccgtgcccgcgaggccgcgcgcaaggcgcgcgagatgacccgccgcaagggcgcgctg
+gacatcgccggcctgcccggcaaactggccgattgccaggaaaaggacccggcgctctcc
+gaactgtacatcgtggagggtgactccgcgggcggttccgccaagcagggccgcaatcgc
+cggacccaggcgatcctgccgctcaagggcaagatcctcaacgtcgaaaaggcgcgcttc
+gacaagatgctctcctcccaggaggtcggtacgctgatcactgccctgggctgtggcatc
+ggtcgcgaggaatacaacatcgacaagctgcgctaccacaacatcatcatcatgaccgat
+gctgacgtcgacggttcgcacatccgcaccctgctgttgaccttcttcttccgccagatg
+cccgagctgatcgagcgtggctacatctacatcgcccagcccccgttgtacaaggtcaag
+cgcggcaagcaggagcagtacatcaaggacgaccaggccatggaagagtacatgacccag
+tcggccctggaagacgccagcctgcacgtcaacgagcacgctccgggcctgtccggagca
+gcgctggagaaactggtcaacgagtatcgcggggtgatcgccaccctcaagcgcctgtcg
+cgcctgtacccccaggagctaaccgagcacttcatctacctgcctaccgtgtcggtggac
+gacctggctaacgagtcggccatgcagggctggttggagaagttccaggcgcgtctgacc
+gccgccgagaagtccggcctgacctacaaggccagcctgcgcgaagaccgcgagcgccac
+ctgtggctgcccgaggtggaactggtggcccacggcctgtccagctacgtcaccttcaac
+cgtgacttcttcgccagcaatgactaccgctcggtgtcgctgctcggcgaccagctgaac
+agcctgctggaagacggcgcctacgtgcagaagggtgagcgcaagcgcccgatcagcgcc
+ttcaaggacggcctggactggctgatggccgaaggtaccaagcgccacagcatccagcga
+tacaaggggctgggcgagatgaaccctgagcagctgtgggaaaccaccatggatccgaac
+gtccggcgcatgctcaaggtgaccatcgaggacgccatcgccgccgaccagatcttcaac
+accctgatgggcgatgccgtggagccgcgccgcgacttcatcgaaagcaacgcgctggcg
+gtgtcgaacctggacgtgtga
+>fig|287.15923.peg.7|K5B69_00035|   hypothetical protein   [Pseudomonas aeruginosa strain SE5419 | 287.15923]
+gtgaaacgcctgaaaaagacactgcacctttcaagcttgtccctcgcttccctggctctt
+tcttccgccgccctggcggccgctccggtcatgctcgaccagggcaaggaatggaccgaa
+agccaccgccaggacttctacagccgcgaccagggctcgcaggtgatgcccctgccctgg
+ctcaaggcgttgcgacagccggatggaacgcctttcctcgccgacagcctggcccgctac
+ggctatttgcccaaccccaaggcgcccgcggaaggcctgccggtgggcttcaccgtagcc
+ggcacgggcgcccggcagatggtcggcatgacctgttcggcctgccatacccggcagatc
+gaggtgaagggcactgcctatcggatcgacggcggtccggcgatcgtcgacttccaggca
+ttcctcgccgacctcgatcgggccgtgggaccgctgaccagcgatgacgccgccttcgac
+gccttcgccaagccgatcctcggggccaatccgcctcccggtgcgcgcgacgctctgctc
+gcggcggtgaaggaatggtacgagccctatcacacgctgatcgagcgcgcgctgcccaag
+gacacctggggaccggcgcggctggacgcggtatcgatgatcttcaaccgccttaccggg
+ctggatatcggcaccgcgccgccctacctgattcccgacaacatcaaggcggccgatgcg
+ccggtgcgctatccgttcctgtggaacgcggcgcggcagaacaagacccagtggcccggc
+ttcgccgccaacggcaacgacctgctcggcctggcgcgcaatgtcggcgaggtctacggg
+gtgttcgccaccttccacccgcagaagagcaagttccacctgctgggcatggactacctg
+aagatcaactcggccaacttccacgggctgggcaagctggaagacctgatcaagaagatc
+ggcccgccgaagtggccctgggcggtggacaagcacctggccaggaaaggcgcgctgatc
+ttcgcccgcaagaccgacgaaggtggctgcgtggagtgccacggcatccggatcaaggac
+ctggtgctttgggacactccgctgagggacgtcggcagcgacagccgccagcacgccatc
+ctcgatggccaggtgcagaccggcgtgatggagggcgcgcggatgccgttcggccagccg
+ctgaaggcgaccgacggagccttcgacgtactcgccgtagcggtggccggttcgatcctg
+cagcacttcgtgccgatcctcggtgagaagcacgatgccaaggcggcggcggtcaagccg
+gaaagcgtgatgaccgacgaaacccggcaactgctgaccgccttccagaagccggtgcgt
+acccaggccgacccctacccctacgagtcgcgggtcctgcaggggatctgggcggcggcg
+ccgtacctgcacaacggctcggtgccgaccctggaagagttgctgaagccggccgcggag
+cgggtggaatccttcccggtgggctcggcctacgacgtggacaaggtcggcctcgccgcc
+cagcagacccaattcggcagctatgtgctgaagaccaccggctgcgagcagcgtgattcc
+ggcaacagccgctgcggccatgagtacggcaccagcctgtcggccgaggagaagcgcgcg
+ctgctggagtatctgaaggtcctgtag
+END
+
+    my $aa_sz = 0;
+    my $dna_sz = 0;
+    open(F, "<", \$inp_seqs_aa) or die;
+    while (my($id, $def, $seq) = read_next_fasta_seq(\*F))
+    {
+	my $s = length($seq);
+	$aa_sz += $s;
+    }
+    close(F);
+    open(F, "<", \$inp_seqs_dna) or die;
+    while (my($id, $def, $seq) = read_next_fasta_seq(\*F))
+    {
+	my $s = length($seq);
+	$dna_sz += $s;
+    }
+    close(F);
+    return($aa_sz, $dna_sz);
+}

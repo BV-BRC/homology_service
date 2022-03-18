@@ -102,6 +102,8 @@ module HomologyService
 	string genome_name;
 	string genome_id;
 	string md5;
+	string locus_tag;
+	string alt_locus_tag;
 	int match_count;
     } FeatureMetadata;
 
@@ -115,6 +117,18 @@ module HomologyService
     funcdef blast_fasta_to_genomes(string fasta_data,
 				   string program,
 				   list<genome_id> genomes,
+				   /* subject_type is "contigs" or "features" */
+				   string subject_type,
+				   /* Post demo we will slot this in here.
+				      BlastParameters blast_parameters */
+				   float evalue_cutoff,
+				   int max_hits,
+				   float min_coverage)
+	returns(list<Report> reports, mapping<string, FeatureMetadata> metadata) authentication optional;
+
+    funcdef blast_fasta_to_taxon(string fasta_data,
+				   string program,
+				   string taxon_id,
 				   /* subject_type is "contigs" or "features" */
 				   string subject_type,
 				   /* Post demo we will slot this in here.

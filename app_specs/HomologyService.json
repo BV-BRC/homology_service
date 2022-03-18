@@ -1,0 +1,164 @@
+{
+    "id": "Homology",
+    "script": "App-Homology",
+    "label": "Perform homology searches",
+    "description": "Perform homology searches on sequence data",
+    "default_memory": "10G",
+    "parameters": [
+        {
+            "id": "input_type",
+            "label": "Type of input (dna or aa)",
+            "required": 1,
+            "type": "enum",
+            "enum": ["dna", "aa"]
+        },
+        {
+            "id": "input_source",
+            "label": "Source of input (id_list, fasta_data, fasta_file, feature_group)",
+            "required": 1,
+            "type": "enum",
+            "enum": ["id_list", "fasta_data", "fasta_file", "feature_group"]
+        },
+	{
+	    "id": "input_fasta_data",
+	    "label": "Input sequence in fasta formats",
+	    "required": 0,
+	    "default": null,
+	    "type": "string"
+	},
+	{
+	    "id": "input_id_list",
+	    "label": "Input sequence as a list of sequence identifiers",
+	    "required": 0,
+	    "default": null,
+	    "type": "array"
+	},
+	{
+	    "id": "input_fasta_file",
+	    "label": "Input sequence as a workspace file of fasta data",
+	    "required": 0,
+	    "default": null,
+	    "type": "wsid"
+	},
+	{
+	    "id": "input_feature_group",
+	    "label": "Input sequence as a workspace feature group",
+	    "required": 0,
+	    "default": null,
+	    "type": "wsid"
+	},
+	{
+	    "id": "db_type",
+	    "label": "Database type to search (protein / DNA / RNA / contigs)",
+	    "required": 1,
+	    "type": "enum",
+	    "enum": ["faa", "ffn", "frn", "fna"]
+	},
+	{
+	    "id": "db_source",
+            "label": "Source of database (id_list, fasta_data, fasta_file, genome_list, taxon_list, feature_group, genome_group, precomputed_database)",
+            "required": 1,
+            "type": "enum",
+            "enum": ["id_list", "fasta_data", "fasta_file", "genome_list", "feature_group", "genome_group", "taxon_list", "precomputed_database"]
+	},
+	{ 
+	    "id": "db_fasta_data",
+	    "label": "Database sequences as fasta",
+	    "required": 0,
+	    "default": null,
+	    "type": "string"
+	},
+	{ 
+	    "id": "db_fasta_file",
+	    "label": "Database fasta file",
+	    "required": 0,
+	    "default": null,
+	    "type": "wsid"
+	},
+	{
+	    "id": "db_id_list",
+	    "label": "Database as a list of sequence identifiers",
+	    "required": 0,
+	    "default": null,
+	    "type": "array"
+	},
+	{ 
+	    "id": "db_feature_group",
+	    "label": "Database feature group",
+	    "required": 0,
+	    "default": null,
+	    "type": "wsid"
+	},
+	{ 
+	    "id": "db_genome_group",
+	    "label": "Database genome group",
+	    "required": 0,
+	    "default": null,
+	    "type": "wsid"
+	},
+	{ 
+	    "id": "db_genome_list",
+	    "label": "Database genome list",
+	    "required": 0,
+	    "default": null,
+	    "type": "array"
+	},
+	{ 
+	    "id": "db_taxon_list",
+	    "label": "Database taxon list",
+	    "required": 0,
+	    "default": null,
+	    "type": "array"
+	},
+	{ 
+	    "id": "db_precomputed_database",
+	    "label": "Precomputed database name",
+	    "required": 0,
+	    "default": null,
+	    "type": "string"
+	},
+	{
+	    "id": "blast_program",
+	    "label": "BLAST program to use",
+	    "required": 0,
+	    "type": "enum",
+	    "enum": ["blastp", "blastn", "blastx", "tblastn", "tblastx"]
+	},
+	{
+	    "id": "blast_evalue_cutoff",
+	    "label": "BLAST  E-value cutoff",
+	    "required": 0,
+	    "type": "float",
+	    "default": 1e-5
+	},
+	{
+	    "id": "blast_max_hits",
+	    "label": "BLAST max-hits",
+	    "required": 0,
+	    "type": "int",
+	    "default": 300
+	},
+	{
+	    "id": "blast_min_coverage",
+	    "label": "BLAST mininum coverage",
+	    "required": 0,
+	    "type": "int"
+	},
+        {
+            "id": "output_path",
+            "label": "Output Folder",
+            "required": 1,
+            "default": null,
+            "desc": "Path to which the output will be written.",
+            "type": "folder"
+        },
+        {
+            "id":"output_file",
+            "label":"File Basename",
+            "required": 1,
+            "default":null,
+            "desc":"Basename for the generated output files.",
+            "type":"wsid"
+        }
+    ]
+}

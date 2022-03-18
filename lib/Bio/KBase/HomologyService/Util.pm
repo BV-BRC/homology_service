@@ -3,6 +3,7 @@ package Bio::KBase::HomologyService::Util;
 use Bio::KBase::HomologyService::Bench;
 
 use strict;
+use File::Path 'make_path';
 use File::Temp;
 use File::Basename;
 use Data::Dumper;
@@ -10,8 +11,10 @@ use base 'Class::Accessor';
 use IPC::Run 'run';
 use JSON::XS;
 use DB_File;
+use LWP::UserAgent;
+use gjoseqlib;
 
-__PACKAGE__->mk_accessors(qw(blast_db_genomes impl json));
+__PACKAGE__->mk_accessors(qw(blast_db_genomes blast_db_private_genomes impl json));
 
 my %blast_command_subject_type = (blastp => 'a',
 				  blastn => 'd',
@@ -31,9 +34,48 @@ sub new
     my $self = {
 	impl => $impl,
 	blast_db_genomes => $impl->{_blast_db_genomes},
+	blast_db_private_genomes => $impl->{_blast_db_private_genomes},
 	json => JSON::XS->new->pretty(1),
     };
     return bless $self, $class;
+}
+
+sub data_api
+{
+    my($self) = @_;
+    return $self->{impl}->{_data_api};
+}
+
+sub compute_db_filename
+{
+    my($self, $genome, $db_type, $type) = @_;
+
+    my @candidates;
+    if ($db_type =~ /^a/i)
+    {
+	push(@candidates,
+	     ["PATRIC.faa", "PATRIC.faa.pin", "faa"],
+	     ["RefSeq.faa", "RefSeq.faa.pin", "faa"]);
+    }
+    elsif ($db_type =~ /^d/i && $type =~ /^c/i)
+    {
+	push(@candidates,
+	     ["fna", "fna.nin", "fna"]);
+    }
+    elsif ($db_type =~ /^d/i && $type =~ /^f/i)
+    {
+	push(@candidates,
+	     ["PATRIC.ffn", "PATRIC.ffn.nin", "ffn"],
+	     ["RefSeq.ffn", "RefSeq.ffn.nin", "ffn"],
+	     ["PATRIC.frn", "PATRIC.frn.nin", "frn"],
+	     ["RefSeq.frn", "RefSeq.frn.nin", "frn"]);
+    }
+    else
+    {
+	die "find_genome_db: Invalid combination of db_type=$db_type and type=$type";
+    }
+
+    return @candidates;
 }
 
 sub find_genome_db
@@ -41,36 +83,223 @@ sub find_genome_db
     my($self, $genome, $db_type, $type) = @_;
 
     my $base = $self->blast_db_genomes . "/$genome";
+
+    my @candidates = $self->compute_db_filename($genome, $db_type, $type);
+    print STDERR Dumper(\@candidates);
+    my @paths;
+    for my $cand (@candidates)
+    {
+	my($file, $check, $subdir) = @$cand;
+	my $path = "$base.$file";
+	my $check_path = "$base.$check";
+	if (-f $check_path)
+	{
+	    push(@paths, $path);
+	}
+	else
+	{
+	    # Try the new path
+	    my $dir = $self->blast_db_genomes . "/$subdir";
+	    $path = "$dir/$genome.$file";
+	    $check_path = "$dir/$genome.$check";
+	    print STDERR "Try $check_path\n";
+	    if (-f $check_path)
+	    {
+		push(@paths, $path);
+	    }
+	}
+    }
+    print STDERR "candidate paths: @paths\n";
+    return @paths;
+}
+
+sub find_private_genome_db
+{
+    my($self, $genome, $owner, $db_type, $type) = @_;
+
+    my $base = $self->blast_db_private_genomes . "/$owner/$genome";
+
     my $file;
     my $check;
+    my $create;
+    
     if ($db_type =~ /^a/i)
     {
-	$file = "$base.faa";
+	$file = "private.faa";
 	$check = "$file.pin";
+	$create = \&create_private_faa_db;
     }
     elsif ($db_type =~ /^d/i && $type =~ /^c/i)
     {
-	$file = "$base.fna";
+	$file = "private.fna";
 	$check = "$file.nin";
+	$create = \&create_private_fna_db;
     }
     elsif ($db_type =~ /^d/i && $type =~ /^f/i)
     {
-	$file = "$base.ffn";
+	$file = "private.ffn";
 	$check = "$file.nin";
+	$create = \&create_private_ffn_db;
     }
     else
     {
-	die "find_genome_db: Invalid combination of db_type=$db_type and type=$type";
+	die "find_private_genome_db: Invalid combination of db_type=$db_type and type=$type";
     }
 
-
-    if (! -f $check)
+    if (! -f "$base/$check")
     {
-	die "find_genome_db: Could not find index file $check";
+	$self->$create($genome, $owner, $db_type, $type, $base, $file);
     }
 
-    return $file;
+    return "$base/$file";
 }
+
+sub create_private_faa_db
+{
+    my($self, $genome, $owner, $db_type, $type, $base, $file) = @_;
+    print STDERR "Create FAA $genome $owner\n";
+
+    my $api = $self->data_api;
+
+    make_path($base);
+    my $fasta_file = "$base/$file";
+
+    my $sequence_count = 0;
+
+    open(my $fasta_fh, ">", "$fasta_file") or die "create_private_faa_db: cannot write $fasta_file: $!";
+    $api->query_cb("genome_feature",
+		   sub {
+		       my ($data) = @_;
+
+		       my $seqs = $api->lookup_sequence_data_hash([map { $_->{aa_sequence_md5} } @$data ]);
+		       
+		       for my $ent (@$data) {
+			   my $tag = join("|", @$ent{qw(patric_id refseq_locus_tag alt_locus_tag)});
+			   my $def = join("   ", $tag, $ent->{product}, "[$ent->{genome_name} | $genome]");
+			   print_alignment_as_fasta($fasta_fh, [$def, $seqs->{$ent->{aa_sequence_md5}}]);
+			   $sequence_count++;
+		       }
+		   },
+		   [ "eq",     "feature_type", "CDS" ],
+		   [ "eq",     "annotation",  "PATRIC" ],
+		   [ "eq",     "genome_id",    $genome ],
+		   [ "select", "patric_id,genome_name,product,refseq_locus_tag,alt_locus_tag,aa_sequence_md5" ],
+		  );
+
+    close($fasta_fh);
+
+    if ($sequence_count == 0)
+    {
+	die "Error creating BLAST FAA database for $genome (owned by $owner): No protein sequences found in genome\n";
+    }
+
+    my $exe = "makeblastdb";
+    my $suffix = $self->impl->{_blast_program_suffix};
+    $exe .= $suffix if $suffix;
+    my $prefix = $self->impl->{_blast_program_prefix};
+    $exe = $prefix . $exe if $prefix;
+
+    my @cmd = ($exe, "-in", $fasta_file, "-dbtype", "prot");
+    my $rc = system(@cmd);
+    $rc == 0 or die "Error $rc creating blastdb for $genome $owner: @cmd\n";
+}
+
+sub create_private_fna_db
+{
+    my($self, $genome, $owner, $db_type, $type, $base, $file) = @_;
+
+    print STDERR "Create FNA $genome $owner\n";
+    my $api = $self->data_api;
+
+    make_path($base);
+    my $fasta_file = "$base/$file";
+
+    my $sequence_count = 0;
+    open(my $fasta_fh, ">", "$fasta_file") or die "create_private_faa_db: cannot write $fasta_file: $!";
+    $api->query_cb("genome_sequence",
+		   sub {
+		       my ($data) = @_;
+		       for my $ent (@$data) {
+			   my $tag = "accn|" . $ent->{accession};
+			   my $desc = $ent->{description} // $ent->{genome_name};
+			   my $def = join("   ", $tag, $desc, "[$ent->{genome_name} | $genome]");
+			   print_alignment_as_fasta($fasta_fh, [$def, $ent->{sequence}]);
+			   $sequence_count++;
+		       }
+		   },
+		   [ "eq",     "genome_id",    $genome ],
+		   [ "eq",     "sequence_type",  "contig" ],
+		   [ "select", "description,genome_name,sequence,accession" ],
+		  );
+
+    close($fasta_fh);
+
+    if ($sequence_count == 0)
+    {
+	die "Error creating BLAST FNA database for $genome (owned by $owner): No contig sequences found in genome\n";
+    }
+
+    my $exe = "makeblastdb";
+    my $suffix = $self->impl->{_blast_program_suffix};
+    $exe .= $suffix if $suffix;
+    my $prefix = $self->impl->{_blast_program_prefix};
+    $exe = $prefix . $exe if $prefix;
+
+    my @cmd = ($exe, "-in", $fasta_file, "-dbtype", "nucl");
+    my $rc = system(@cmd);
+    $rc == 0 or die "Error $rc creating blastdb for $genome $owner: @cmd\n";
+}
+
+sub create_private_ffn_db
+{
+    my($self, $genome, $owner, $db_type, $type, $base, $file) = @_;
+
+    print STDERR "Create FFN $genome $owner\n";
+    my $api = $self->data_api;
+
+    make_path($base);
+    my $fasta_file = "$base/$file";
+
+    my $sequence_count = 0;
+
+    open(my $fasta_fh, ">", "$fasta_file") or die "create_private_faa_db: cannot write $fasta_file: $!";
+    $api->query_cb("genome_feature",
+		   sub {
+		       my ($data) = @_;
+
+		       my $seqs = $api->lookup_sequence_data_hash([map { $_->{na_sequence_md5} } @$data ]);
+		       
+		       for my $ent (@$data) {
+			   my $tag = join("|", @$ent{qw(patric_id refseq_locus_tag alt_locus_tag)});
+			   my $def = join("   ", $tag, $ent->{product}, "[$ent->{genome_name} | $genome]");
+			   print_alignment_as_fasta($fasta_fh, [$def, $seqs->{$ent->{na_sequence_md5}}]);
+			   $sequence_count++;
+		       }
+		   },
+		   [ "ne",     "feature_type", "source" ],
+		   [ "eq",     "genome_id",    $genome ],
+		   [ "eq",     "annotation",  "PATRIC" ],
+		   [ "select", "patric_id,genome_name,product,refseq_locus_tag,alt_locus_tag,na_sequence_md5" ],
+		  );
+
+    close($fasta_fh);
+
+    if ($sequence_count == 0)
+    {
+	die "Error creating BLAST FFN database for $genome (owned by $owner): No feature sequences found in genome\n";
+    }
+
+    my $exe = "makeblastdb";
+    my $suffix = $self->impl->{_blast_program_suffix};
+    $exe .= $suffix if $suffix;
+    my $prefix = $self->impl->{_blast_program_prefix};
+    $exe = $prefix . $exe if $prefix;
+
+    my @cmd = ($exe, "-in", $fasta_file, "-dbtype", "nucl");
+    my $rc = system(@cmd);
+    $rc == 0 or die "Error $rc creating blastdb for $genome $owner: @cmd\n";
+}
+
 
 #
 # Build a blast alias database and return a File::Temp referring to it.
@@ -85,26 +314,77 @@ sub build_alias_database
     {
 	return;
     }
-    elsif (@$subj_genomes == 1)
+
+    #
+    # We partition the genome list into private and public sets.
+    #
+
+    my @todo = @$subj_genomes;
+    my $public = [];
+    my $private = [];
+    while (@todo)
     {
-	return $self->find_genome_db($subj_genomes->[0], $subj_db_type, $subj_type);
+	my @block = splice(@todo, 0, 500);
+	my $glist = join(",", @block);
+
+	my @res = $self->data_api->query('genome',
+					 ['in', 'genome_id', "($glist)"],
+					 ['select', 'genome_id', 'public', 'owner']);
+
+	# print STDERR Dumper($glist, \@res);
+	for my $ent (@res)
+	{
+	    push(@{$ent->{public} ? $public : $private}, [$ent->{genome_id}, $ent->{owner}]);
+	}
+    }
+    # print STDERR Dumper($public, $private);
+
+    my @public_files = map { $self->find_genome_db($_->[0], $subj_db_type, $subj_type) } @$public;
+    my @private_files = map { $self->find_private_genome_db($_->[0], $_->[1], $subj_db_type, $subj_type) } @$private;
+
+    my @db_files = (@public_files, @private_files);
+    # print STDERR Dumper(\@public_files, \@private_files);
+    
+    if (@db_files == 1)
+    {
+	return $db_files[0];
     }
 
-    my @db_files;
-    for my $g (@$subj_genomes)
-    {
-	my $f = $self->find_genome_db($g, $subj_db_type, $subj_type);
-	push(@db_files, $f);
-    }
     my $build_db;
-    print STDERR Dumper(\@db_files);
-    my $db_file = File::Temp->new(UNLINK => 1);
+    # print STDERR Dumper(\@db_files);
+    my $db_file = File::Temp->new(UNLINK => 0);
     close($db_file);
+    my $dblist_tmp;
+    my @dblist_arg;
+    if (@db_files > 10)
+    {
+	$dblist_tmp = File::Temp->new();
+	print $dblist_tmp "$_\n" foreach @db_files;
+	close($dblist_tmp);
+	@dblist_arg = ("-dblist_file", "$dblist_tmp");
+    }
+    else
+    {
+	@dblist_arg = ("-dblist", join(" ", @db_files));
+    }
+
+    my $title;
+    if (@$subj_genomes > 10)
+    {
+	my $nmore = @$subj_genomes - 10;
+	$title = "DB of " . join(",", @$subj_genomes[0..9]) . " and $nmore more";
+    }
+    else
+    {
+	$title = "DB of " . join(",", @$subj_genomes);
+    }
+
     $build_db = ["blastdb_aliastool",
-		 "-dblist", join(" ", @db_files),
-		 "-title", join(" ", @$subj_genomes),
+		 @dblist_arg,
+		 "-title", $title,
 		 "-dbtype", (($subj_db_type =~ /^a/i) ? 'prot' : 'nucl'),
-			 "-out", $db_file];
+		 "-out", "$db_file"];
+    print STDERR "@$build_db\n";
     my $ok = run($build_db);
     $ok or die "Error running database build @$build_db\n";
     print STDERR "Built db $db_file\n";
@@ -113,7 +393,7 @@ sub build_alias_database
 
 sub construct_blast_command
 {
-    my($self, $program, $evalue_cutoff, $max_hits, $min_coverage) = @_;
+    my($self, $program, $evalue_cutoff, $max_hits, $min_coverage, $is_short) = @_;
 
     my $exe = $blast_command_exe_name{$program};
 
@@ -149,14 +429,84 @@ sub construct_blast_command
 	push(@cmd, "-num_threads", $self->impl->{_blast_threads});
     }
 
+    #
+    # if we have short sequences, use the tasks optimized for that.
+    #
+    if ($program eq 'blastn' && $is_short)
+    {
+	push(@cmd, "-task", "blastn-short");
+    }
+    elsif ($program eq 'blastp' && $is_short)
+    {
+	push(@cmd, "-task", "blastp-short");
+    }
+       
     return @cmd;
+}
+
+sub blast_fasta_to_taxon
+{
+    my ($self, $fasta_data, $program, $taxon_id, $subj_type, $evalue_cutoff, $max_hits, $min_coverage) = @_;
+
+    #
+    # Query the data API to determine the set of genomes that derive from taxon_id.
+    #
+
+    $taxon_id =~ /(\d+)/ or die "Invalid taxon ID";
+    $taxon_id = $1;
+    my $ua = LWP::UserAgent->new;
+    my $res = $ua->post("https://www.patricbrc.org/api/genome",
+		        {
+			    fl => 'genome_id,genome_name',
+			    q => "taxon_lineage_ids:$taxon_id",
+			    start => 0,
+			    rows => 1000
+			},
+			"Content-type" => "application/solrquery+x-www-form-urlencoded",
+			"Accept", "application/solr+json");
+    die "failure retrieving taxon data: " . $res->status_line . "\n" . $res->content if !$res->is_success;
+    my $doc;
+    eval { $doc = decode_json($res->content); };
+    $doc or die "could not decode taxon data: $@";
+
+    my $subj_db_type = $blast_command_subject_type{$program};
+    
+    my @genomes;
+    for my $g (@{$doc->{response}->{docs}})
+    {
+	my $gid = $g->{genome_id};
+	my $gname = $g->{genome_name};
+
+	#
+	# Try to find the db file and emit a warning if it is missing.
+	#
+	eval {
+	    my $d = $self->find_genome_db($gid, $subj_db_type, $subj_type);
+	    print "Found $d for $gid $gname\n";
+	    push(@genomes, $gid);
+	};
+	if ($@)
+	{
+	    print STDERR "No blast database found for $gid $gname\n";
+	    print STDERR $@;
+	}
+    }
+
+    die "No blast databases found for $taxon_id" if @genomes == 0;
+
+    return $self->blast_fasta_to_genomes($fasta_data, $program, \@genomes, $subj_type, $evalue_cutoff, $max_hits, $min_coverage);
 }
 
 sub blast_fasta_to_genomes
 {
     my ($self, $fasta_data, $program, $genomes, $subj_type, $evalue_cutoff, $max_hits, $min_coverage) = @_;
 
-    my @cmd = $self->construct_blast_command($program, $evalue_cutoff, $max_hits, $min_coverage);
+    my $is_short = $self->test_for_short_query($fasta_data);
+
+    # print STDERR "query data len=" . length($fasta_data) . "is_short=$is_short\n";
+    # print STDERR "!$fasta_data!\n";
+    
+    my @cmd = $self->construct_blast_command($program, $evalue_cutoff, $max_hits, $min_coverage, $is_short);
 
     my $subj_db_type = $blast_command_subject_type{$program};
 
@@ -177,6 +527,7 @@ sub blast_fasta_to_genomes
     my $err;
 
     my $bench = Bio::KBase::HomologyService::Bench->new();
+    print STDERR "cmd=@cmd\n";
     my $ok = run(\@cmd, "<", \$fasta_data, ">", \$json, "2>", \$err);
     $bench->finish();
 
@@ -189,15 +540,29 @@ sub blast_fasta_to_genomes
 	my $rsize = length($json);
 	my $logstr = "blast_fasta_to_genomes len=$len $stat program=$program genomes=$g ok=$ok" .
 		       ($ok ? " result_size=$rsize" : " err=$err");
-	if ($ctx)
-	{
-	    $ctx->log_info($logstr);
-	}
-	else
-	{
+	#if ($ctx)
+	#{
+	#    $ctx->log_info($logstr);
+	#}
+	#else
+	#{
 	    print STDERR $logstr, "\n";
-	}
+	#}
 	    
+    }
+
+    #
+    # If we created a tempfile, flush it and the created database files.
+    #
+    if (ref($db_file) eq 'File::Temp')
+    {
+	my @tmps = <$db_file.*>;
+	push(@tmps, $db_file);
+	my $n = unlink(@tmps);
+	if (!$n || $n != @tmps)
+	{
+	    warn "Unlink @tmps failed ($n $!)\n";
+	}
     }
 
     if (!$ok)
@@ -227,47 +592,89 @@ sub blast_fasta_to_genomes
 	{
 	    for my $desc (@{$res->{description}})
 	    {
-		my $md;
-		if ($desc->{id} =~ /^gnl\|BL_ORD/)
-		{
-		    if ($desc->{title} =~ /^(\S+)\s+(.*)\s{3}\[(.*?)(\s*\|\s*(\S+))?\]\s*$/)
-		    {
-			$desc->{id} = $1;
-			$md->{function} = $2;
-			$md->{genome_name} = $3;
-			$md->{genome_id} = $5 if $5;
-		    }
-		    elsif ($desc->{title} =~ /^(\S+)\s+\[(.*?)(\s*\|\s*(\S+))?\]\s*$/)
-		    {
-			$desc->{id} = $1;
-			$md->{genome_name} = $2;
-			$md->{genome_id} = $4 if $4;
-		    }
-		}
-		else
-		{
-		    $desc->{id} =~ s/^gnl\|//;
-		    if ($desc->{title} =~ /^\s*(.*)\s{3}\[(.*?)(\s*\|\s*(\S+))?\]\s*$/)
-		    {
-			$md->{function} = $1;
-			$md->{genome_name} = $2;
-			$md->{genome_id} = $4 if $4;
-		    }
-		    elsif ($desc->{title} =~ /^\s*\[(.*?)(\s*\|\s*(\S+))?\]\s*$/)
-		    {
-			$md->{genome_name} = $1;
-			$md->{genome_id} = $3 if $3;
-		    }
-		}
-		if ($desc->{id} =~ /^(kb\|g\.\d+)/)
-		{
-		    $md->{genome_id} = $1;
-		}
+		my $md = $self->decode_title($desc);
+		
 		$metadata->{$desc->{id}} = $md if $md;
 	    }
 	}
     }
     return($doc, $metadata);
+}
+
+sub decode_title
+{
+    my($self, $desc) = @_;
+	
+    my $md;
+    
+    if ($desc->{id} =~ /^gnl\|BL_ORD/)
+    {
+	if ($desc->{title} =~ /^(\S+)\s{3}(.*)\s{3}(.*)$/)
+	{
+	    my $id = $1;
+	    my $fun = $2;
+	    my $ginfo = $3;
+	    $id =~ s/^((fig\|\d+\.\d+.[^.]+\.\d+)|(accn\|[^|]+))//;
+	    my $fid = $1;
+	    print "id=$id\n";
+	    $id =~ s/^\|//;
+	    $id =~ s/\|$//;
+	    my @rest = split(/\|/, $id);
+	    my $locus;
+	    my $alt;
+	    if (@rest == 2)
+	    {
+		($locus, $alt) = @rest;
+		$md->{locus_tag} = $locus;
+		$md->{alt_locus_tag} = $alt;
+	    }
+	    elsif (@rest == 1)
+	    {
+		$alt = $rest[0];
+		$md->{alt_locus_tag} = $alt;
+	    }
+	    if ($ginfo =~ /^\[(.*) \| (\d+\.\d+)/)
+	    {
+		$md->{genome_name} = $1;
+		$md->{genome_id} = $2;
+	    }
+	    $desc->{id} = $fid;
+	    $md->{function} = $fun;
+	}
+	elsif ($desc->{title} =~ /^(\S+)\s+(.*)\s{3}\[(.*?)(\s*\|\s*(\S+))?\]\s*$/)
+	{
+	    $desc->{id} = $1;
+	    $md->{function} = $2;
+	    $md->{genome_name} = $3;
+	    $md->{genome_id} = $5 if $5;
+	}
+	elsif ($desc->{title} =~ /^(\S+)\s+\[(.*?)(\s*\|\s*(\S+))?\]\s*$/)
+	{
+	    $desc->{id} = $1;
+	    $md->{genome_name} = $2;
+	    $md->{genome_id} = $4 if $4;
+	}
+    }
+    else
+    {
+	$desc->{id} =~ s/^gnl\|//;
+	if ($desc->{title} =~ /^\s*(.*)\s{3}\[(.*?)(\s*\|\s*(\S+))?\]\s*$/)
+	{
+	    $md->{function} = $1;
+	    $md->{genome_name} = $2;
+	    $md->{genome_id} = $4 if $4;
+	}
+	elsif ($desc->{title} =~ /^\s*\[(.*?)(\s*\|\s*(\S+))?\]\s*$/)
+	{
+	    $md->{genome_name} = $1;
+	    $md->{genome_id} = $3 if $3;
+	}
+    }
+    if ($desc->{id} =~ /^(kb\|g\.\d+)/)
+    {
+	$md->{genome_id} = $1;
+    }
+    return $md;
 }
 
 sub enumerate_databases
@@ -276,14 +683,19 @@ sub enumerate_databases
 
     my $dir = $self->impl->{_blast_db_databases};
 
-    my %typemap = ('.faa' => 'protein', '.ffn' => 'dna');
+    my %typemap = ('.faa' => 'protein',
+		   '.ffn' => 'dna',
+		   '.faa.pal' => 'protein',
+		   '.ffn.nal' => 'dna',
+		   '.fna.nal' => 'dna',
+		  );
 
     my $res = [];
     
-    for my $db (<$dir/*.{faa,ffn}>)
+    for my $db (<$dir/*.{faa,ffn,faa.pal,ffn.nal,fna.nal}>)
     {
 	my $key = basename($db);
-	my($name, $path, $suffix) = fileparse($db, '.faa', '.ffn');
+	my($name, $path, $suffix) = fileparse($db, qw(.faa .ffn .faa.pal  .ffn.nal .fna.nal));
 
 	my $descr = {
 	    name => $name,
@@ -293,6 +705,7 @@ sub enumerate_databases
 	};
 	push(@$res, $descr);
     }
+
     return $res;
 }
 
@@ -300,14 +713,21 @@ sub blast_fasta_to_database
 {
     my($self, $fasta_data, $program, $database_key, $evalue_cutoff, $max_hits, $min_coverage) = @_;
 
-    my @cmd = $self->construct_blast_command($program, $evalue_cutoff, $max_hits, $min_coverage);
+    my $is_short = $self->test_for_short_query($fasta_data);
+
+    my @cmd = $self->construct_blast_command($program, $evalue_cutoff, $max_hits, $min_coverage, $is_short);
     if (!@cmd)
     {
 	die "blast_fasta_to_database: Couldn't find blast program $program";
     }
 
+    #
+    # Sanity check.
+    #
+    $database_key = basename($database_key);
+
     my $db_file = $self->impl->{_blast_db_databases} . "/" . $database_key;
-    -f $db_file or die "Couldn't find db file $db_file\n";
+    -f $db_file or warn "Couldn't find db file $db_file\n";
 
     my $map_file = $self->impl->{_blast_db_databases} . "/" . $database_key . ".map.btree";
     my %map;
@@ -337,17 +757,16 @@ sub blast_fasta_to_database
 	my $rsize = length($json);
 	my $logstr = "blast_fasta_to_database len=$len db_file=$db_file $stat program=$program ok=$ok" .
 		       ($ok ? " result_size=$rsize" : " err=$err");
-	if ($ctx)
-	{
-	    $ctx->log_info($logstr);
-	}
-	else
-	{
+	#if ($ctx)
+	#{
+	#    $ctx->log_info($logstr);
+	#}
+	#else
+	#{
 	    print STDERR $logstr, "\n";
-	}
+	#}
 	    
     }
-
 
     if (!$ok)
     {
@@ -377,69 +796,35 @@ sub blast_fasta_to_database
 	{
 	    for my $desc (@{$res->{description}})
 	    {
-		my $md;
-
-		#
-		# We expect to get our form of the title since we're processing one of our MD5 NR databases.
-		#
-
-		# "title": "md5|b4dd51958f3c7a7a21e0f222dcbbd764|kb|g.1053.peg.3023   Threonine synthase (EC 4.2.3.1)   [Escherichia coli 101-1]   (1067 matches)"
-
-		if ($desc->{title} =~ /^md5\|([a-z0-9]{32})\|((kb\|g\.\d+)\S+)\s{3}(.*)\s{3}\[(.*?)\]\s{3}\((\d+)\s+matches/)
-		{
-		    my $md5 = $1;
-		    my $rep = $2;
-		    my $rep_genome_id = $3;
-		    my $rep_fn = $4;
-		    my $rep_genome = $5;
-		    my $matches = $6;
-
-		    $desc->{id} = $rep;
-
-		    $md->{function} = $rep_fn;
-		    $md->{genome_name} = $rep_genome;
-		    $md->{genome_id} = $rep_genome_id;
-		    $md->{md5} = $md5;
-		    $md->{match_count} = 0 + $matches;
-
-		    $metadata->{$desc->{id}} = $md if $md;
-
-		    my $identical = $map{$md5};
-		    my @iden = split(/$;/, $identical);
-		    for my $one (@iden)
-		    {
-			my($xid, $xfunc, $xgenome) = split(/\t/, $one);
-			next if $xid eq $desc->{id};
-			my($xgn) = $xid =~ /^(kb\|g\.\d+)/;
-			push(@{$identical_proteins->{$desc->{id}}}, [$xid, {
-			    function => $xfunc,
-			    genome_name => $xgenome,
-			    genome_id => $xgn,
-			}]);
-		    }
-		}
-		#
-		# Contigs database
-		#
-		# >kb|g.0.c.1   [Escherichia coli K12]
-		#
-		elsif ($desc->{title} =~ /^((kb\|g\.\d+)\S+)\s+\[(.*)\]/)
-		{
-		    my $contig = $1;
-		    my $gid = $2;
-		    my $gname = $3;
-
-		    $desc->{id} = $contig;
-
-		    $md->{genome_name} = $gname;
-		    $md->{genome_id} = $gid;
-
-		    $metadata->{$desc->{id}} = $md if $md;
-		}
+		my $md = $self->decode_title($desc);
+		$metadata->{$desc->{id}} = $md if $md;
 	    }
 	}
     }
     return($doc, $metadata, $identical_proteins);
 }
 
+sub test_for_short_query
+{
+    my($self, $fasta_data) = @_;
+    my $thresh = 30;
 
+    my $cur;
+
+    while ($fasta_data =~ /^(.*)/mg)
+    {
+        my $l = $1;
+	    
+        if ($l =~ /^>/)
+        {
+	    return 0 if $cur > $thresh;
+            $cur = 0;
+        }
+        else
+        {
+            $cur += ($l =~ tr/[a-z][A-Z]//);
+        }
+    }
+    return $cur > $thresh ? 0 : 1;
+    
+}

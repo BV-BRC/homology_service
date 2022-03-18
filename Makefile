@@ -5,14 +5,18 @@ TARGET ?= /kb/deployment
 DEPLOY_RUNTIME ?= /kb/runtime
 SERVER_SPEC = HomologyService.spec
 
+APP_SERVICE = app_service
+
 #
 # This layout is specfic to the current (January 2016) layout of 
 # the NCBI BLAST distribution.
 #
-BLAST_BASE = ncbi-blast-2.3.0+
-BLAST_FTP_SRC = ftp://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/LATEST/$(BLAST_BASE)-x64-linux.tar.gz
+BLAST_VERSION = 2.3.0
+BLAST_BASE = ncbi-blast-$(BLAST_VERSION)+
+BLAST_FTP_SRC = ftp://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/$(BLAST_VERSION)/$(BLAST_BASE)-x64-linux.tar.gz
 BLAST_FTP_FILE = $(notdir $(BLAST_FTP_SRC))
 BLAST_DEPLOY_DIR = $(TARGET)/services/$(SERVICE)/bin
+BLAST_DB_SEARCH_PATH = /vol/blastdb/bvbrc-service
 
 SERVICE_MODULE = lib/Bio/KBase/HomologyService/Service.pm
 
@@ -47,11 +51,13 @@ TPAGE_ARGS = --define kb_top=$(TARGET) \
 	--define kb_psgi=$(SERVICE_PSGI_FILE) \
 	--define kb_async_service_port=$(ASYNC_SERVICE_PORT) \
 	--define kb_async_psgi=$(ASYNC_SERVICE_PSGI) \
+	--define blast_db_search_path=$(BLAST_DB_SEARCH_PATH) \
+	--define blast_sqlite_db=$(BLAST_SQLITE_DB) \
 	$(TPAGE_TEMPDIR)
 
 TESTS = $(wildcard t/client-tests/*.t)
 
-all: bin compile-typespec service
+all: build-libs bin compile-typespec service
 
 test:
 	# run each test
@@ -73,6 +79,7 @@ compile-typespec: Makefile
 	touch lib/biop3/$(SERVICE_NAME_PY)/__init__.py 
 	mkdir -p lib/javascript/$(SERVICE_NAME)
 	compile_typespec \
+--patric \
 		--psgi $(SERVICE_PSGI_FILE) \
 		--impl Bio::KBase::$(SERVICE_NAME)::%sImpl \
 		--service Bio::KBase::$(SERVICE_NAME)::Service \
@@ -90,14 +97,20 @@ bin: $(BIN_PERL) $(BIN_SERVICE_PERL)
 
 deploy: deploy-client deploy-service
 deploy-all: deploy-client deploy-service
-deploy-client: compile-typespec deploy-docs deploy-libs deploy-scripts 
+deploy-client: build-libs compile-typespec deploy-docs deploy-libs deploy-scripts 
 
+build-libs:
+	$(TPAGE) $(TPAGE_BUILD_ARGS) $(TPAGE_ARGS) Config.pm.tt > lib/Bio/P3/HomologySearch/Config.pm
 
-deploy-service: deploy-dir deploy-libs deploy-service-scripts deploy-blast
+deploy-service: deploy-dir deploy-libs deploy-service-scripts deploy-blast deploy-specs
 	$(TPAGE) $(TPAGE_ARGS) service/start_service.tt > $(TARGET)/services/$(SERVICE)/start_service
 	chmod +x $(TARGET)/services/$(SERVICE)/start_service
 	$(TPAGE) $(TPAGE_ARGS) service/stop_service.tt > $(TARGET)/services/$(SERVICE)/stop_service
 	chmod +x $(TARGET)/services/$(SERVICE)/stop_service
+
+deploy-specs:
+	mkdir -p $(TARGET)/services/$(APP_SERVICE)
+	rsync -arv app_specs $(TARGET)/services/$(APP_SERVICE)/.
 
 deploy-service-scripts:
 	export KB_TOP=$(TARGET); \
@@ -109,10 +122,12 @@ deploy-service-scripts:
 	        base=`basename $$src .pl`; \
 	        echo install $$src $$base ; \
 	        cp $$src $(TARGET)/plbin ; \
-	        $(WRAP_PERL_SCRIPT) "$(TARGET)/plbin/$$basefile" $(TARGET)/services/$(SERVICE)/bin/$$base ; \
+	        $(WRAP_PERL_SCRIPT) "$(TARGET)/plbin/$$basefile" $(TARGET)/bin/$$base ; \
 	done
 
-deploy-blast:
+deploy-blast: $(BLAST_DEPLOY_DIR)/blastp
+
+$(BLAST_DEPLOY_DIR)/blastp:
 	if [ ! -s $(BLAST_FTP_FILE) ] ; then \
 		curl --fail -o $(BLAST_FTP_FILE) $(BLAST_FTP_SRC);  \
 	fi
