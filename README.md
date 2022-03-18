@@ -66,7 +66,22 @@ p3x-create-blast-db --no-quality-check --title Viral\ Refs --parallel 2 aa featu
 
 Loading sqlite database from the individual genome files
 
+Set up db file
+
 rm db.sqlite3
 sqlite3 db.sqlite
 > .read db-schema.sql
+
+Create nodes.tsv in the NCBI taxdump directory (need notes on that)
+Load taxonomy data
+
+sqlite3 db.sqlite
+sqlite> .mode csv
+sqlite> .import nodes.tsv TaxNode
+
+
+Load blast data
 p3x-create-databases-lookup --curated-directory ref --sqlite db.sqlite /vol/blastdb/bvbrc-service blast.db
+
+Create lineage lookup
+perl ~/P3/dev-slurm/dev_container/modules/homology_service/mk-lineage /disks/tmp/blast.sqlite 
