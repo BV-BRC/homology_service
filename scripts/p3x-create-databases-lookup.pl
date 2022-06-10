@@ -123,7 +123,6 @@ sub process_path
     if ($dbh)
     {
 	my($t) = $dbh->selectcol_arrayref(qq(SELECT id FROM DbType WHERE suffix = ?), undef, $dbtype);
-	# warn Dumper($dbtype, $t);
 	$sql_dbtype = $t->[0];
 	($t) = $dbh->selectcol_arrayref(qq(SELECT id FROM FeatureType WHERE name = ?), undef, $ftype);
 	# warn Dumper($ftype, $t);

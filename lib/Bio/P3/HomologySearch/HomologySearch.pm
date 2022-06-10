@@ -175,6 +175,28 @@ use Bio::P3::Workspace::WorkspaceClientExt;
 
 use File::Slurp;
 
+#
+# Configure PATH to point at the correct location for BLAST binaries.
+#
+# If we have $KB_TOP/services/homology_service/bin/blastp, that is our
+# deployed path and use that.
+#
+# Otherwise, assume we are in a dev container where we will look in
+# $KB_TOP/modules/homology_service/blast.bin.
+#
+
+{
+    my @blast_paths = ("$ENV{KB_TOP}/services/homology_service/bin",
+		       "$ENV{KB_TOP}/modules/homology_service/blast.bin");
+    my @found = grep { -x "$_/blastp" } @blast_paths;
+    if (@found)
+    {
+	print STDERR "Initializing BLAST path to $found[0]\n";
+	$ENV{PATH} = "$found[0]:$ENV{PATH}";
+    }
+    system("blastp", "-version");
+}
+
 __PACKAGE__->mk_accessors(qw(app app_def params token task_id
 			     blast_program blast_params
 			     blast_sqlite_db

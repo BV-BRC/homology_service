@@ -17,7 +17,7 @@
             "label": "Source of input (id_list, fasta_data, fasta_file, feature_group)",
             "required": 1,
             "type": "enum",
-            "enum": ["id_list", "fasta_data", "fasta_file", "feature_group"]
+            "enum": ["id_list", "fasta_data", "fasta_file", "feature_group", "genome_group_features", "genome_group_sequences"]
         },
 	{
 	    "id": "input_fasta_data",
@@ -43,6 +43,13 @@
 	{
 	    "id": "input_feature_group",
 	    "label": "Input sequence as a workspace feature group",
+	    "required": 0,
+	    "default": null,
+	    "type": "wsid"
+	},
+	{
+	    "id": "input_genome_group",
+	    "label": "Input sequence as a workspace genome group",
 	    "required": 0,
 	    "default": null,
 	    "type": "wsid"

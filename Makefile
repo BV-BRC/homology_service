@@ -11,7 +11,7 @@ APP_SERVICE = app_service
 # This layout is specfic to the current (January 2016) layout of 
 # the NCBI BLAST distribution.
 #
-BLAST_VERSION = 2.3.0
+BLAST_VERSION = 2.13.0
 BLAST_BASE = ncbi-blast-$(BLAST_VERSION)+
 BLAST_FTP_SRC = ftp://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/$(BLAST_VERSION)/$(BLAST_BASE)-x64-linux.tar.gz
 BLAST_FTP_FILE = $(notdir $(BLAST_FTP_SRC))
@@ -57,7 +57,7 @@ TPAGE_ARGS = --define kb_top=$(TARGET) \
 
 TESTS = $(wildcard t/client-tests/*.t)
 
-all: build-libs bin compile-typespec service
+all: build-libs build-blast bin compile-typespec service
 
 test:
 	# run each test
@@ -125,17 +125,34 @@ deploy-service-scripts:
 	        $(WRAP_PERL_SCRIPT) "$(TARGET)/plbin/$$basefile" $(TARGET)/bin/$$base ; \
 	done
 
-deploy-blast: $(BLAST_DEPLOY_DIR)/blastp
+#
+# We use a captive blast build in order to tightly control versioning.
+#
 
-$(BLAST_DEPLOY_DIR)/blastp:
+build-blast: blast.deploy/$(BLAST_BASE)/bin/blastp
+
+deploy-blast: build-blast
+	mkdir -p $(BLAST_DEPLOY_DIR)
+	cp blast.deploy/$(BLAST_BASE)/bin/* $(BLAST_DEPLOY_DIR)
+
+blast.deploy/$(BLAST_BASE)/bin/blastp:
 	if [ ! -s $(BLAST_FTP_FILE) ] ; then \
 		curl --fail -o $(BLAST_FTP_FILE) $(BLAST_FTP_SRC);  \
 	fi
 	rm -rf blast.deploy
 	mkdir blast.deploy
 	tar -C blast.deploy -x -v -f $(BLAST_FTP_FILE)
-	mkdir -p $(BLAST_DEPLOY_DIR)
-	cp blast.deploy/$(BLAST_BASE)/bin/* $(BLAST_DEPLOY_DIR)
+	rm -f blast.bin
+	ln -s blast.deploy/$(BLAST_BASE)/bin blast.bin
+
+doit:
+	-ldso=$$KB_RUNTIME/glibc-2.17/lib/ld-linux-x86-64.so.2 ; \
+	if grep -i 'release 6' /etc/centos-release && [[ -f $$ldso ]] ; then \
+	    for f in blast.deploy/$(BLAST_BASE)/bin/* ; do \
+		echo "Patch $$f"; \
+		patchelf --set-interpreter $$ldso $$f; \
+	    done \
+	fi
 
 deploy-monit:
 	$(TPAGE) $(TPAGE_ARGS) service/process.$(SERVICE).tt > $(TARGET)/services/$(SERVICE)/process.$(SERVICE)
