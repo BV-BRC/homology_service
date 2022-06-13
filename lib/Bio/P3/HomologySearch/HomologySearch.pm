@@ -194,7 +194,7 @@ use File::Slurp;
 	print STDERR "Initializing BLAST path to $found[0]\n";
 	$ENV{PATH} = "$found[0]:$ENV{PATH}";
     }
-    system("blastp", "-version");
+    # system("blastp", "-version");
 }
 
 __PACKAGE__->mk_accessors(qw(app app_def params token task_id
