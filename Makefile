@@ -145,15 +145,6 @@ blast.deploy/$(BLAST_BASE)/bin/blastp:
 	rm -f blast.bin
 	ln -s blast.deploy/$(BLAST_BASE)/bin blast.bin
 
-doit:
-	-ldso=$$KB_RUNTIME/glibc-2.17/lib/ld-linux-x86-64.so.2 ; \
-	if grep -i 'release 6' /etc/centos-release && [[ -f $$ldso ]] ; then \
-	    for f in blast.deploy/$(BLAST_BASE)/bin/* ; do \
-		echo "Patch $$f"; \
-		patchelf --set-interpreter $$ldso $$f; \
-	    done \
-	fi
-
 deploy-monit:
 	$(TPAGE) $(TPAGE_ARGS) service/process.$(SERVICE).tt > $(TARGET)/services/$(SERVICE)/process.$(SERVICE)
 
