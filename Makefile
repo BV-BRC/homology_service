@@ -11,7 +11,7 @@ APP_SERVICE = app_service
 # This layout is specfic to the current (January 2016) layout of 
 # the NCBI BLAST distribution.
 #
-BLAST_VERSION = 2.3.0
+BLAST_VERSION = 2.13.0
 BLAST_BASE = ncbi-blast-$(BLAST_VERSION)+
 BLAST_FTP_SRC = ftp://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/$(BLAST_VERSION)/$(BLAST_BASE)-x64-linux.tar.gz
 BLAST_FTP_FILE = $(notdir $(BLAST_FTP_SRC))
@@ -57,7 +57,7 @@ TPAGE_ARGS = --define kb_top=$(TARGET) \
 
 TESTS = $(wildcard t/client-tests/*.t)
 
-all: build-libs bin compile-typespec service
+all: build-libs build-blast bin compile-typespec service
 
 test:
 	# run each test
@@ -102,17 +102,13 @@ deploy-client: build-libs compile-typespec deploy-docs deploy-libs deploy-script
 build-libs:
 	$(TPAGE) $(TPAGE_BUILD_ARGS) $(TPAGE_ARGS) Config.pm.tt > lib/Bio/P3/HomologySearch/Config.pm
 
-deploy-service: deploy-dir deploy-libs deploy-service-scripts deploy-blast deploy-specs
+deploy-service: deploy-dir deploy-libs deploy-service-scripts-local deploy-blast deploy-specs
 	$(TPAGE) $(TPAGE_ARGS) service/start_service.tt > $(TARGET)/services/$(SERVICE)/start_service
 	chmod +x $(TARGET)/services/$(SERVICE)/start_service
 	$(TPAGE) $(TPAGE_ARGS) service/stop_service.tt > $(TARGET)/services/$(SERVICE)/stop_service
 	chmod +x $(TARGET)/services/$(SERVICE)/stop_service
 
-deploy-specs:
-	mkdir -p $(TARGET)/services/$(APP_SERVICE)
-	rsync -arv app_specs $(TARGET)/services/$(APP_SERVICE)/.
-
-deploy-service-scripts:
+deploy-service-scripts-local:
 	export KB_TOP=$(TARGET); \
 	export KB_RUNTIME=$(DEPLOY_RUNTIME); \
 	export KB_PERL_PATH=$(TARGET)/lib ; \
@@ -125,17 +121,25 @@ deploy-service-scripts:
 	        $(WRAP_PERL_SCRIPT) "$(TARGET)/plbin/$$basefile" $(TARGET)/bin/$$base ; \
 	done
 
-deploy-blast: $(BLAST_DEPLOY_DIR)/blastp
+#
+# We use a captive blast build in order to tightly control versioning.
+#
 
-$(BLAST_DEPLOY_DIR)/blastp:
+build-blast: blast.deploy/$(BLAST_BASE)/bin/blastp
+
+deploy-blast: build-blast
+	mkdir -p $(BLAST_DEPLOY_DIR)
+	cp blast.deploy/$(BLAST_BASE)/bin/* $(BLAST_DEPLOY_DIR)
+
+blast.deploy/$(BLAST_BASE)/bin/blastp:
 	if [ ! -s $(BLAST_FTP_FILE) ] ; then \
 		curl --fail -o $(BLAST_FTP_FILE) $(BLAST_FTP_SRC);  \
 	fi
 	rm -rf blast.deploy
 	mkdir blast.deploy
 	tar -C blast.deploy -x -v -f $(BLAST_FTP_FILE)
-	mkdir -p $(BLAST_DEPLOY_DIR)
-	cp blast.deploy/$(BLAST_BASE)/bin/* $(BLAST_DEPLOY_DIR)
+	rm -f blast.bin
+	ln -s blast.deploy/$(BLAST_BASE)/bin blast.bin
 
 deploy-monit:
 	$(TPAGE) $(TPAGE_ARGS) service/process.$(SERVICE).tt > $(TARGET)/services/$(SERVICE)/process.$(SERVICE)
@@ -152,11 +156,5 @@ deploy-dir:
 	if [ ! -d $(SERVICE_DIR) ] ; then mkdir $(SERVICE_DIR) ; fi
 	if [ ! -d $(SERVICE_DIR)/webroot ] ; then mkdir $(SERVICE_DIR)/webroot ; fi
 	if [ ! -d $(SERVICE_DIR)/bin ] ; then mkdir $(SERVICE_DIR)/bin ; fi
-
-$(BIN_DIR)/%: service-scripts/%.pl $(TOP_DIR)/user-env.sh
-	$(WRAP_PERL_SCRIPT) '$$KB_TOP/modules/$(CURRENT_DIR)/$<' $@
-
-$(BIN_DIR)/%: service-scripts/%.py $(TOP_DIR)/user-env.sh
-	$(WRAP_PYTHON_SCRIPT) '$$KB_TOP/modules/$(CURRENT_DIR)/$<' $@
 
 include $(TOP_DIR)/tools/Makefile.common.rules

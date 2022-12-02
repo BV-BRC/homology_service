@@ -30,15 +30,21 @@ use IPC::Run qw(run);
 use PerlIO::via::Blockwise;
 use BerkeleyDB;
 
+#
+# Import this to properly intialize PATH for blast binaries.
+#
+use Bio::P3::HomologySearch::HomologySearch;
+
 my($opt, $usage) = describe_options("%c %o dbtype ftype blast-db-file",
 				    ['exclude-taxon=i@', "Do not include genomes in this taxon", { default => [] }],
 				    ["reference", "Include reference genomes"],
+				    ["representative", "Include representative genomes"],
 				    ["create-nr", "Create nonredundant database"],
 				    ["quality-check!", "Require quality of Good (invert with --no-quality-check)", { default => 1 }],
 				    ["check-files!", "Check for download files (invert with --no-check-files)", { default => 1 }],
 				    ["viral", "Create viral database. Causes CDS & mat_peptide features to be included"],
-				    ["representative", "Include representative genomes"],
 				    ["complete", "Include only genome_status=Complete genomes"],
+				    ["blastdb-version=i", "Use this blastdb version", { default => 5 }],
 				    ['taxon=i@', "Limit to this taxon", { default => [] }],
 				    ["title=s", "Database title", { default => "blast db"}],
 				    ["parallel|j=i", "Use this many threads", { default => 1 }],
@@ -56,6 +62,8 @@ my %type_suffix = (aa => "faa",
 		   dna => "fna");
 my %blast_type = (aa => "prot",
 		  dna => "nucl");
+my %blastdb_suffixes = (aa => ['pal', 'psq'],
+			dna => ['nal', 'nsq']);
 
 my $dbtype = shift;
 my $ftype = shift;
@@ -73,6 +81,27 @@ if (!$opt->dump)
 	die "Invalid dbtype $dbtype: must be aa or dna\n";
     }
 }
+
+my $dbfile = "$db.$ftype.$type_suffix{$dbtype}";
+my $taxids = "$dbfile.taxids";
+my $taxlist = "$dbfile.taxlist";
+my $glist = "$dbfile.glist";
+my $nr_dir;
+$nr_dir = "$db.$ftype.$type_suffix{$dbtype}.nrdb" if $opt->create_nr;
+
+#
+# Check for existing data.
+#
+my @blast_files = grep { -s $_ } map { "$dbfile.$_" } @{$blastdb_suffixes{$dbtype}};
+
+if (-s $taxids &&
+    @blast_files &&
+    !$opt->overwrite)
+{
+    print STDERR "Blast data in $dbfile already exists, skipping build\n";
+    exit 0;
+}
+print STDERR "Will build $dbfile\n";
 
 my $api = P3DataAPI->new();
 
@@ -134,27 +163,15 @@ if (@$genomes == 0)
     exit 0;
 }
 
-my $dbfile = "$db.$ftype.$type_suffix{$dbtype}";
-my $taxids = "$db.$ftype.$type_suffix{$dbtype}.taxids";
-my $taxlist = "$db.$ftype.$type_suffix{$dbtype}.taxlist";
-my $glist = "$db.$ftype.$type_suffix{$dbtype}.glist";
-my $nr_dir;
-$nr_dir = "$db.$ftype.$type_suffix{$dbtype}.nrdb" if $opt->create_nr;
-
-if (-s $taxids && !$opt->overwrite)
-{
-    print STDERR "$taxids already exists, skipping build\n";
-    exit 0;
-}
-
 #open(DB, ">", $dbfile) or die "Cannot write $dbfile: $!";
 #open(TI, ">", $taxids) or die "Cannot write $taxids: $!";
 
 my $db_files;
+my $cleanup = sub {};
 
 if ($opt->check_files)
 {
-    $db_files = process_from_download_files();
+    ($db_files, $cleanup) = process_from_download_files();
 }
 else
 {
@@ -167,6 +184,7 @@ else
 if (! -s $taxids)
 {
     print STDERR "Skipping creation of empty database for $dbfile\n";
+    &$cleanup();
     exit 0;
 }
 
@@ -178,7 +196,10 @@ my $ok = run(["cat", @$db_files],
 	      "-parse_seqids",
 	      "-taxid_map", $taxids,
 	      "-title", $opt->title,
+	      "-blastdb_version", $opt->blastdb_version,
 	      "-dbtype", $blast_type{$dbtype}]);
+
+&$cleanup();
 
 $ok or die "Error  creating blastdb: $?";
 	   
@@ -436,7 +457,7 @@ sub process_from_download_files
 	if ($opt->check_files)
 	{
 	    $path = compute_path($genome_id, $ftype, $dbtype);
-	    next unless $path;
+	    # next unless $path;
 	}
 	
 	$g->{path} = $path;
@@ -448,13 +469,34 @@ sub process_from_download_files
     open(TL, ">", $taxlist) or die "Cannot write $taxlist: $!";
     print TL "$_\n" foreach sort { $a <=> $b  } keys %tax;
     close(TL);
-    
-    my $tmpdir = File::Temp->newdir(CLEANUP => 1);
+
+    #
+    # Don't clean up. The forked processes will inherit the ref and
+    # undef it at completion, triggering cleanup.
+    #
+    my $tmpdir = File::Temp->newdir(CLEANUP => 0);
     my $dbdir = "$tmpdir/db";
     my $taxdir = "$tmpdir/tax";
     
     make_path($dbdir, $taxdir);
-    
+
+    my $cleanup = sub {
+	my $err;
+	remove_tree("$tmpdir", { error => \$err });
+	if ($err && @$err)
+	{
+	    for my $diag (@$err) {
+		my ($file, $message) = %$diag;
+		if ($file eq '') {
+		    warn "general error: $message\n";
+		}
+		else {
+		    warn "problem unlinking $file: $message\n";
+		}
+	    }
+	}
+    };
+
     my $boot = sub {
 	my $dbfile = "$dbdir/$$";
 	my $taxfile = "$taxdir/$$";
@@ -471,8 +513,9 @@ sub process_from_download_files
 	
 	my($path, $genome_id, $genome_name, $taxon_id, $genome_length) = @$work{qw(path genome_id genome_name taxon_id genome_length)};
 	
-	if (!open(P, "<:via(Blockwise)", $path))
+	if (!$path || !open(P, "<:via(Blockwise)", $path))
 	{
+	    print STDERR "$path open failed, using data api\n";
 	    #
 	    # Load from data api.
 	    #
@@ -481,15 +524,18 @@ sub process_from_download_files
 	    {
 		if ($dbtype eq 'aa')
 		{
+		    print STDERR "Loading $genome_id from api\n";
 		    $path = $api->retrieve_protein_features_in_genomes_to_temp([$genome_id]);
 		}
 		else
 		{
+		    print STDERR "Loading $genome_id from api\n";
 		    $path = $api->retrieve_dna_features_in_genomes_to_temp([$genome_id]);
 		}
 	    }
 	    else		# contigs
 	    {
+		print STDERR "Loading $genome_id from api\n";
 		$path = $api->retrieve_contigs_in_genomes_to_temp([$genome_id]);
 	    }
 	    
@@ -532,9 +578,9 @@ sub process_from_download_files
 	{
 	    while (my($rawid, $def, $seq) = read_next_fasta(\*P))
 	    {
-		if ($rawid =~ /^(\S+)/)
+		if ($rawid =~ /^(accn\|)?(\S+)/)
 		{
-		    my $id = "lcl|${genome_id}.$1";
+		    my $id = "lcl|${genome_id}.$2";
 		    
 		    if ($seen{$id}++)
 		    {
@@ -563,13 +609,19 @@ sub process_from_download_files
     if (@taxf == 0)
     {
 	warn "No taxids found for $dbfile\n";
+	&$cleanup();
 	exit 0;
     }
-    my $ok = run(["cat", @taxf], ">", $taxids);
-    
-    $ok or die "Failure creating $taxids from @taxf\n";
 
-    return \@dbf;
+    my $ok = run(["cat", @taxf], ">", $taxids);
+
+    if (!$ok)
+    {
+	&$cleanup();
+	die "Failure creating $taxids from @taxf\n";
+    }
+
+    return(\@dbf, $cleanup);
 }
 
 sub compute_path
@@ -597,6 +649,7 @@ sub compute_path
 	    warn "Empty data for $path\n";
 	    return undef;
 	}
+	# print STDERR "Contig path for $genome is $path\n";
 	return $path;
     }
     else

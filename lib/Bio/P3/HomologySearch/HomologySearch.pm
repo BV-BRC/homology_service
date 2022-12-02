@@ -161,9 +161,11 @@ use JSON::XS;
 use Module::Metadata;
 use List::Util qw(any none);
 use IPC::Run qw(run start finish);
+use File::Temp qw(:seekable);
 use File::Basename;
 use File::Copy qw(copy);
 use File::Path qw(make_path remove_tree);
+use Statistics::Descriptive;
 use Template;
 use Text::CSV_XS qw(csv);
 use Bio::KBase::AppService::ClientExt;
@@ -172,6 +174,28 @@ use Bio::KBase::AppService::FastaParser 'parse_fasta';
 use Bio::P3::Workspace::WorkspaceClientExt;
 
 use File::Slurp;
+
+#
+# Configure PATH to point at the correct location for BLAST binaries.
+#
+# If we have $KB_TOP/services/homology_service/bin/blastp, that is our
+# deployed path and use that.
+#
+# Otherwise, assume we are in a dev container where we will look in
+# $KB_TOP/modules/homology_service/blast.bin.
+#
+
+{
+    my @blast_paths = ("$ENV{KB_TOP}/services/homology_service/bin",
+		       "$ENV{KB_TOP}/modules/homology_service/blast.bin");
+    my @found = grep { -x "$_/blastp" } @blast_paths;
+    if (@found)
+    {
+	print STDERR "Initializing BLAST path to $found[0]\n";
+	$ENV{PATH} = "$found[0]:$ENV{PATH}";
+    }
+    # system("blastp", "-version");
+}
 
 __PACKAGE__->mk_accessors(qw(app app_def params token task_id
 			     blast_program blast_params
@@ -458,44 +482,36 @@ sub stage_input_fasta_data
     open(my $fh, ">", $file)
 	or die "Cannot open $file for writing: $!";
 
-    my $is_short = 1;
-    while (my($id, $def, $seq) = read_next_fasta_seq($infh))
-    {
-	print "$id " . length($seq). "\n";
-	$is_short = 0 if length($seq) > $self->{short_feature_threshold};
-	print_alignment_as_fasta($fh, [$id, $def, $seq]);
-    }
+    my $stats = $self->read_and_validate_fasta($infh, $params->{input_type}, $fh, 1);
+
+    my $is_short = $stats->min() <= $self->{short_feature_threshold};
     return ($file, $is_short);
 }
 
 #
 # Stage input from a workspace file
+#
 sub stage_input_fasta_file
 {
     my($self, $params, $stage_dir) = @_;
+
+    my $tmp = File::Temp->new;
 
     my $file = "$stage_dir/input_$params->{input_type}.fa";
     my $ws = Bio::P3::Workspace::WorkspaceClientExt->new;
 
     my $is_short = 1;
-    if (open(my $fh, ">", $file))
-    {
 
-	$ws->copy_files_to_handles(1, undef, [[$params->{input_fasta_file}, $fh]]);
+    $ws->copy_files_to_handles(1, undef, [[$params->{input_fasta_file}, $tmp]]);
+    $tmp->seek(0, SEEK_SET);
+    
+    open(my $fh, ">", $file) or die "Cannot open $file for writing: $!";
 
-	close($fh);
+    my $stats = $self->read_and_validate_fasta($tmp, $params->{input_type}, $fh, 1);
 
-	open(my $fh, "<", $file);
-	while (my($id, $def, $seq) = read_next_fasta_seq($fh))
-	{
-	    $is_short = 0 if length($seq) > $self->{short_feature_threshold};
-	}
-	close($fh);
-    }
-    else
-    {
-	die "Cannot open $file for writing: $!";
-    }
+    my $is_short = $stats->min() <= $self->{short_feature_threshold};
+    close($fh);
+
     return($file, $is_short);
 }
 
@@ -544,7 +560,7 @@ sub stage_database_fasta_data
     open(my $fh, "<", \ $params->{db_fasta_data}) or die "Cannot open filehandle on data: $!";
     open(my $out, ">", $file) or die "Cannot open output file $file: $!";
 
-    $self->read_and_validate_fasta($fh, $params->{db_type}, $out);
+    $self->read_and_validate_fasta($fh, $params->{db_type}, $out, 0);
 
     close($fh);
     close($out);
@@ -835,26 +851,23 @@ sub stage_database_precomputed_database
 
 sub read_and_validate_fasta
 {
-    my($self, $in_fh, $type, $out_fh) = @_;
-    
-    my %val_re = (faa => qr/^[a-z]+$/i,
-		  ffn => qr/^[actg]+$/i,
-		  frn => qr/^[actg]+$/i,
-		  fna => qr/^[actg]+$/i);
+    my($self, $in_fh, $type, $out_fh, $collect_stats) = @_;
 
-    my $is_prot = $type eq 'faa';
+    my $is_prot = $type eq 'faa' || $type eq 'aa';
 
-    my $re = $val_re{$type};
-    $re or die "read_and_validate_fasta: invalid type $type\n";
+    my $stats;
+    if ($collect_stats)
+    {
+	$stats = Statistics::Descriptive::Sparse->new();
+    }
 
-    parse_fasta($in_fh, $out_fh, sub {
+    parse_fasta($in_fh, undef, sub {
 	my($id, $seq) = @_;
-	if ($seq !~ $re)
-	{
-	    die "Invalid sequence $id in database file\n" . substr($seq, 0, 50), "\n";
-	}
+	$stats->add_data(length($seq)) if $stats;
+	print_alignment_as_fasta($out_fh, [$id, undef, $seq]);
 	return 1;
     }, $is_prot);
+    return $stats;
 }
 
 =head2 determine_blast_program
@@ -1244,6 +1257,4 @@ sub compute_db_preflight
 
     return($db_type, $sz);
 }
-
-
 1;
