@@ -185,6 +185,7 @@ use File::Slurp;
 # $KB_TOP/modules/homology_service/blast.bin.
 #
 
+
 {
     my @blast_paths = ("$ENV{KB_TOP}/services/homology_service/bin",
 		       "$ENV{KB_TOP}/modules/homology_service/blast.bin");
@@ -194,7 +195,13 @@ use File::Slurp;
 	print STDERR "Initializing BLAST path to $found[0]\n";
 	$ENV{PATH} = "$found[0]:$ENV{PATH}";
     }
-    # system("blastp", "-version");
+    else
+    {
+	print STDERR "No internal BLAST found, using default path $ENV{PATH}\n";
+    }
+    my $out;
+    run(["blastp", "-version-full"], ">", \$out);
+    print STDERR "BLAST version: $out\n";
 }
 
 __PACKAGE__->mk_accessors(qw(app app_def params token task_id

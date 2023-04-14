@@ -26,9 +26,11 @@ my($opt, $usage) = describe_options("%c %o dbtype ftype output-dir",
 				    ["viral", "Build for viral families"],
 				    ["build-tempdir=s", "Tmpdir for build tool", { default => "/dev/shm" }],
 				    ["all-genera", "Build for all genera instead of selected pathogens"],
+				    ['taxon-filter=s%' => "Define a taxon filter file", { default => {} }],
 				    ["check-size!", "Check the genus size to schedule work", { default => 1 }],
 				    ["log-output!", "Log output of individual blast runs to files", { default => 1 }],
 				    ["log-dir=s", "Directory to write log data", { default => "." }],
+				    ["dump-sizes", "Run the size estimation only and dump data"],
 				    ["help|h", "Show this help message"]);
 
 print($usage->text), exit 0 if $opt->help;
@@ -51,6 +53,15 @@ my $build_other = 0;
 
 my $n_procs = $opt->{n_build_threads};
 my $n_build_procs = $opt->{n_db_threads};
+
+#
+# Create options to propagate taxon filters
+#
+my @taxon_opts;
+while (my($k,$v) = each %{$opt->taxon_filter})
+{
+    push(@taxon_opts, "--taxon-filter", "$k=$v");
+}
 
 my $sched = LPTScheduler->new($n_procs);
 
@@ -195,6 +206,8 @@ else
     # push(@create_options, "--no-check-files");
     $catchall_taxon = 2;
 }
+
+push(@create_options, @taxon_opts);
     
 @target_ids = sort { $a <=> $b } @target_ids;
 
@@ -203,14 +216,14 @@ for my $g (sort { $genus_size->{$a} <=> $genus_size->{$b} } keys %$genus_size)
 {
     print "$g\t" . int($genus_size->{$g} / 1e6) . "\n";
 }
-#exit;
+exit if $opt->dump_sizes;
 	
 
 for my $tax (@target_ids)
 {
     my $genus = $taxon_name{$tax};
     my $dat;
-    my $create_params = ["--tax", $tax, @create_options];
+    my $create_params = ["--taxon", $tax, @create_options];
 
     my $sz = 1;
     my $glist = [];
@@ -233,7 +246,7 @@ if ($build_other)
 {
     my $create_params = [(map { ("--exclude", $_) } @exclude),
 			 @create_options,
-			 "--tax", $catchall_taxon];
+			 "--taxon", $catchall_taxon];
     
     my @cmd = ("p3x-create-blast-db",
 	       "--dump",
@@ -257,6 +270,7 @@ if ($build_other)
 }
 
 # print $json->encode(\@all);
+print Dumper($sched);
 
 $sched->run(sub {}, sub {
     my($global, $item) = @_;
@@ -316,7 +330,7 @@ sub compute_genome_lists
     {
 	push(@params, fq => 'superkingdom:Viruses');
 	$facet = 'family';
-	push(@params, fq => "-taxon_id:2697049");
+	# push(@params, fq => "-taxon_id:2697049");
     }
     else
     {
