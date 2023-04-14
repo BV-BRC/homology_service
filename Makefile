@@ -102,7 +102,11 @@ deploy-client: build-libs compile-typespec deploy-docs deploy-libs deploy-script
 build-libs:
 	$(TPAGE) $(TPAGE_BUILD_ARGS) $(TPAGE_ARGS) Config.pm.tt > lib/Bio/P3/HomologySearch/Config.pm
 
-deploy-service: deploy-dir deploy-libs deploy-service-scripts-local deploy-blast deploy-specs
+#
+# RDO 4/14/2023 - we are removing deploy-blast so that we can rely on the updated (patched)
+# BLAST installation in the runtime
+#
+deploy-service: deploy-dir deploy-libs deploy-service-scripts-local deploy-specs
 	$(TPAGE) $(TPAGE_ARGS) service/start_service.tt > $(TARGET)/services/$(SERVICE)/start_service
 	chmod +x $(TARGET)/services/$(SERVICE)/start_service
 	$(TPAGE) $(TPAGE_ARGS) service/stop_service.tt > $(TARGET)/services/$(SERVICE)/stop_service

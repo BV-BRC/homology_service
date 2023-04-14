@@ -60,11 +60,15 @@ We store these lookup tables in Berkeley DB files
 
 create viral reference
 
+
 p3x-create-blast-db --no-quality-check --title Viral\ Refs --parallel 2 aa features vout/tmpref --no-check-files --batch-size 500  --reference --representative  --taxon 10239 -f --viral
+
 
 ===
 
 Loading sqlite database from the individual genome files
+
+use process-tax.pl to download taxdump and create nodes.tsv
 
 Set up db file
 

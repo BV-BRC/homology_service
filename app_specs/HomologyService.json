@@ -14,7 +14,7 @@
         },
         {
             "id": "input_source",
-            "label": "Source of input (id_list, fasta_data, fasta_file, feature_group)",
+            "label": "Source of input (id_list, fasta_data, fasta_file, feature_group, genome_group_features, genome_group_sequences)",
             "required": 1,
             "type": "enum",
             "enum": ["id_list", "fasta_data", "fasta_file", "feature_group", "genome_group_features", "genome_group_sequences"]

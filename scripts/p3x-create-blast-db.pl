@@ -44,6 +44,7 @@ my($opt, $usage) = describe_options("%c %o dbtype ftype blast-db-file",
 				    ["check-files!", "Check for download files (invert with --no-check-files)", { default => 1 }],
 				    ["viral", "Create viral database. Causes CDS & mat_peptide features to be included"],
 				    ["complete", "Include only genome_status=Complete genomes"],
+				    ['taxon-filter=s%' => "Define a taxon filter file", { default => {} }],
 				    ["blastdb-version=i", "Use this blastdb version", { default => 5 }],
 				    ['taxon=i@', "Limit to this taxon", { default => [] }],
 				    ["title=s", "Database title", { default => "blast db"}],
@@ -103,6 +104,22 @@ if (-s $taxids &&
 }
 print STDERR "Will build $dbfile\n";
 
+my %taxon_filter;
+while (my($t, $f) = each(%{$opt->taxon_filter}))
+{
+    print "Loading taxon filter $f for $t\n";
+    open(F, "<", $f) or die "cannot open taxon filter file $f for taxon $t: $!";
+    while (<F>)
+    {
+	if (/(\d+\.\d+)/)
+	{
+	    $taxon_filter{$t}->{$1} = 1;
+	}
+    }
+    close(F);
+}
+
+
 my $api = P3DataAPI->new();
 
 my @params;
@@ -154,6 +171,18 @@ if ($opt->dump)
     print JSON::XS->new->pretty->canonical->encode($genomes);
     exit 0;
 }
+
+
+my @new;
+for my $gid (@$genomes)
+{
+    if (my $tf = $taxon_filter{$gid->{taxon_id}})
+    {
+	next unless $tf->{$gid->{genome_id}};
+    }
+    push(@new, $gid);
+}
+@$genomes = @new;
 
 print STDERR "Building database with " . scalar(@$genomes) . " genomes\n";
 
@@ -397,6 +426,7 @@ sub data_callback
     });
     
     for my $ent (@$data) {
+
 	my $id = "gnl|$ent->{patric_id}";
 	print_alignment_as_fasta($fh,
 				 [
@@ -404,7 +434,7 @@ sub data_callback
 				  $by_md5{$ent->{$key}}
 				  ]
 				);
-	print $tax "$id\t$ent->{taxon_id}\n";
+	print $tax "$id\t$ent->{taxon_id}\n" or die "Cannot write to tax file: $!";
 	push(@{$id_map->{$id}}, [$id, $ent->{taxon_id}]);
     }
     return 1;
