@@ -326,7 +326,7 @@ sub preflight
 
     $cpu = 8 if $db_size_est > 1_000_000;
 
-    my $mem = "32G";
+    my $mem = "48G";
     if ($params->{db_source} eq 'taxon_list')
     {
 	$mem = "128G";
