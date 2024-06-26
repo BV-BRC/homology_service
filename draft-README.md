@@ -18,6 +18,7 @@ This module provides the following application specfication(s):
 
 ## See also
 
+* [BLAST Service Quick Reference](https://www.bv-brc.org/docs/quick_references/services/blast.html)
 * [BLAST Service](https://www.bv-brc.org/docs/https://www.bv-brc.org/app/Homology.html)
 * [BLAST Service Tutorial](https://www.bv-brc.org/docs//tutorial/blast/blast.html)
 
