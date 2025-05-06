@@ -427,7 +427,7 @@ sub stage_input_id_list
 	die "Input source defined as id_list, but no input_id_list parameter specified";
     }
 
-    return $self->stage_input_ids($params, $stage_dir, $ids);
+    return $self->stage_input_ids($params, $stage_dir, $ids, 0);
 }
 
 sub stage_input_feature_group
@@ -441,23 +441,23 @@ sub stage_input_feature_group
 	die "Input source defined as feature_group, but no input_feature_group parameter specified";
     }
 
-    my $ids = $self->api->retrieve_patricids_from_feature_group($group);
+    my $ids = $self->api->retrieve_feature_ids_from_feature_group($group);
 
-    return $self->stage_input_ids($params, $stage_dir, $ids);
+    return $self->stage_input_ids($params, $stage_dir, $ids, 1);
 }
 
 sub stage_input_ids
 {
-    my($self, $params, $stage_dir, $ids) = @_;
+    my($self, $params, $stage_dir, $ids, $use_feature_ids) = @_;
 
     my $seqs;
     if ($params->{input_type} eq 'aa')
     {
-	$seqs = $self->api->retrieve_protein_feature_sequence($ids);
+	$seqs = $self->api->retrieve_protein_feature_sequence($ids, $use_feature_ids);
     }
     else
     {
-	$seqs = $self->api->retrieve_nucleotide_feature_sequence($ids);
+	$seqs = $self->api->retrieve_nucleotide_feature_sequence($ids, $use_feature_ids);
     }
 
     my $file = "$stage_dir/input_$params->{input_type}.fa";
@@ -1182,7 +1182,7 @@ sub compute_input_preflight
     }
     elsif ($src eq 'feature_group')
     {
-	my $ids = $self->api->retrieve_patricids_from_feature_group($params->{input_feature_group});
+	my $ids = $self->api->retrieve_feature_ids_from_feature_group($params->{input_feature_group});
 	$sz = @$ids * 1000;
 	$sz *= 3 if $inp_type eq 'dna';
     }
