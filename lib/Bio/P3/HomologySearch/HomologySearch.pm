@@ -346,6 +346,7 @@ sub preflight
 sub process
 {
     my($self, $app, $app_def, $raw_params, $params) = @_;
+    print "Proc Homology ", Dumper($app_def, $raw_params, $params);
 
     $self->app($app);
     $self->app_def($app_def);
@@ -442,6 +443,7 @@ sub stage_input_feature_group
     }
 
     my $ids = $self->api->retrieve_feature_ids_from_feature_group($group);
+    printf STDERR "Loaded %d ids\n", scalar @$ids;
 
     return $self->stage_input_ids($params, $stage_dir, $ids, 1);
 }
@@ -449,6 +451,8 @@ sub stage_input_feature_group
 sub stage_input_ids
 {
     my($self, $params, $stage_dir, $ids, $use_feature_ids) = @_;
+
+    printf STDERR "Staging %d ids use_feature_ids='$use_feature_ids'\n", scalar @$ids;
 
     my $seqs;
     if ($params->{input_type} eq 'aa')
@@ -459,12 +463,17 @@ sub stage_input_ids
     {
 	$seqs = $self->api->retrieve_nucleotide_feature_sequence($ids, $use_feature_ids);
     }
-
+    printf STDERR "Staged %d sequences\n", scalar keys %$seqs;
     my $file = "$stage_dir/input_$params->{input_type}.fa";
     my $is_short = 1;
     if (open(my $fh, ">", $file))
     {
-	for my $id (@$ids)
+	#
+	# If we came in with feature IDs, we can't use the original IDs since
+	# we mapped them to patric IDs when creating the sequence data
+	#
+	my $idlist = $use_feature_ids ? [keys %$seqs] : $ids;
+	for my $id (@$idlist)
 	{
 	    $is_short = 0 if length($seqs->{$id}) > $self->{short_feature_threshold};
 	    print_alignment_as_fasta($fh, [$id, undef, $seqs->{$id}]);
