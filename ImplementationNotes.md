@@ -68,9 +68,11 @@ p3x-create-blast-db --no-quality-check --title Viral\ Refs --parallel 2 aa featu
 
 Loading the sqlite catalog database (db.sqlite) from the individual genome files.
 
-Everything referenced here lives in this module's scripts/ directory. The order
-below is load-bearing: mk-lineage reads TaxonInDatabase, which does not exist
-until p3x-create-databases-lookup has walked the database tree.
+Everything referenced here lives in this module's scripts/ directory. The p3x-
+tools are wrapped into $KB_TOP/bin by a build and so are on PATH; db-schema.sql
+is data, read by path. The order below is load-bearing:
+p3x-create-taxonomy-lineage reads TaxonInDatabase, which does not exist until
+p3x-create-databases-lookup has walked the database tree.
 
 1. Download the NCBI taxdump and build the node table.
 
@@ -95,7 +97,7 @@ until p3x-create-databases-lookup has walked the database tree.
 
 4. Build the lineage lookup.
 
-   perl scripts/mk-lineage db.sqlite
+   p3x-create-taxonomy-lineage db.sqlite
 
 Check afterwards that TaxNode has as many rows as nodes.tsv has lines. Note
 that sqlite3 is not necessarily on PATH; perl -MDBI works for inspection.
@@ -108,7 +110,7 @@ Two things to be aware of when reading the result:
     curated=0, which makes the "NOT g.curated" filter in
     BlastDatabasesSQL::search_taxa inert.
 
-  - mk-lineage inserts a (taxon_id, NULL) row for any taxon in
+  - p3x-create-taxonomy-lineage inserts a (taxon_id, NULL) row for any taxon in
     TaxonInDatabase that is absent from TaxNode, and those taxa then match
     nothing. data.2022-0916 has 63 of them. Do step 1 at catalog-build time rather
     than reusing a taxdump fetched at the start of the rebuild, so the
