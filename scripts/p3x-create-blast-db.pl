@@ -61,6 +61,7 @@ my($opt, $usage) = describe_options("%c %o dbtype ftype blast-db-file",
 				    ["parallel|j=i", "Use this many threads", { default => 1 }],
 				    ["batch-size=i", "Batch size for genome data lookups for data api", { default => 10 } ],
 				    ["overwrite|f", "Overwrite existing database"],
+				    ["max-missing-fraction=f", "Tolerated mismatch between database records and .taxids lines. Exact match is the norm for bacterial builds; viral sets need a few percent", { default => 0 }],
 				    ["dump", "Don't build, just dump the list of genomes"],
 				    ["help|h", "Show this help message"]);
 
@@ -264,6 +265,90 @@ my $ok = run(["cat", @$db_files],
 &$cleanup();
 
 $ok or die "Error  creating blastdb: $?";
+
+verify_record_count($dbfile, $taxids);
+
+#
+# makeblastdb accepts a truncated input stream without complaint: if one of the
+# child fasta files was cut short (out of space, I/O error, a child that died)
+# we still get a database, just a smaller one. Nothing downstream notices --
+# the catalog loader trusts the .taxids sidecar and never reads the database.
+#
+# The .pjs/.njs metadata records how many sequences actually landed, and
+# .taxids has one line per sequence we intended to write. Here is the only
+# point where both numbers are known, so compare them here.
+#
+# A small shortfall is normal: makeblastdb deterministically rejects a few
+# records in some viral sets. A large one means truncation, so fail and remove
+# .taxids -- that both stops the skip guard at the top of this script from
+# accepting the database on a rerun and keeps p3x-create-databases-lookup from
+# cataloging it.
+#
+sub verify_record_count
+{
+    my($dbfile, $taxids) = @_;
+
+    my($meta) = grep { -f $_ } map { "$dbfile.$_" } qw(pjs njs);
+    if (!$meta)
+    {
+	warn "Cannot verify $dbfile: no .pjs or .njs metadata file\n";
+	return;
+    }
+
+    my $built;
+    if (open(my $fh, "<", $meta))
+    {
+	local $/;
+	my $txt = <$fh>;
+	close($fh);
+	$built = eval { decode_json($txt)->{"number-of-sequences"} };
+    }
+    if (!defined $built)
+    {
+	warn "Cannot verify $dbfile: no number-of-sequences in $meta\n";
+	return;
+    }
+
+    my $expected = 0;
+    if (open(my $fh, "<", $taxids))
+    {
+	$expected++ while <$fh>;
+	close($fh);
+    }
+    else
+    {
+	warn "Cannot verify $dbfile: $taxids: $!\n";
+	return;
+    }
+
+    return if $built == $expected;
+
+    #
+    # Either direction is a defect. A shortfall is truncated input; a surplus
+    # means the taxid map does not describe what is in the database, which
+    # breaks -taxidlist searches just as badly. Measured on data.2022-0916:
+    # every clean bacterial database matches exactly, while the damaged ones
+    # sit at 1.6% and 5.0% short and one runs 1270 records long -- so the
+    # useful default is exact equality, not a percentage band.
+    #
+    my $delta = $expected - $built;
+    my $frac = $expected ? abs($delta) / $expected : 1;
+
+    if ($frac > $opt->max_missing_fraction)
+    {
+	unlink($taxids);
+	die sprintf("Database %s does not match its taxid map: %d records built, " .
+		    "%d expected (%d %s, %.3f%%, tolerance %.3f%%). Removed %s so " .
+		    "this database is not reused or cataloged.\n",
+		    $dbfile, $built, $expected, abs($delta),
+		    $delta > 0 ? "missing" : "extra",
+		    100 * $frac, 100 * $opt->max_missing_fraction, $taxids);
+    }
+
+    warn sprintf("Note: %s holds %d of %d records (%d %s, within tolerance)\n",
+		 $dbfile, $built, $expected, abs($delta),
+		 $delta > 0 ? "missing" : "extra");
+}
 	   
 #
 # We write a single data file with results from the batched data api calls.
@@ -640,7 +725,10 @@ sub process_from_download_files
 			else
 			{
 			    print_alignment_as_fasta($db, [$id, undef, $seq]);
-			    print $tax "$id\t$taxon_id\n";
+			    $db->error
+				and die "Write failed on $dbdir/$$ after $id: $!\n";
+			    print $tax "$id\t$taxon_id\n"
+				or die "Write failed on $taxdir/$$ after $id: $!\n";
 			}
 		    }
 		}
@@ -667,7 +755,10 @@ sub process_from_download_files
 			else
 			{
 			    print_alignment_as_fasta($db, [$id, undef, $seq]);
-			    print $tax "$id\t$taxon_id\n";
+			    $db->error
+				and die "Write failed on $dbdir/$$ after $id: $!\n";
+			    print $tax "$id\t$taxon_id\n"
+				or die "Write failed on $taxdir/$$ after $id: $!\n";
 			}
 		    }
 		}
