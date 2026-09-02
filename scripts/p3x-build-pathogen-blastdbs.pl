@@ -194,10 +194,18 @@ my @create_options;
 my $catchall_taxon;
 if ($opt->viral)
 {
+    #
+    # makeblastdb deterministically rejects a small number of records in some
+    # viral sets, so the record-count check in p3x-create-blast-db needs a
+    # tolerance here. Bacterial builds match exactly and keep the default of 0.
+    # Measured on data.2022-0916: 45 viral databases were short, all by 2.4% or
+    # less and most by under 0.2%.
+    #
     push(@create_options,
 	 "--no-quality-check",
 	 "--no-check-files",
 	 "--batch-size", 500,
+	 "--max-missing-fraction", 0.03,
 	);
     $catchall_taxon = 10239;
 }

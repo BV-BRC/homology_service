@@ -66,26 +66,52 @@ p3x-create-blast-db --no-quality-check --title Viral\ Refs --parallel 2 aa featu
 
 ===
 
-Loading sqlite database from the individual genome files
+Loading the sqlite catalog database (db.sqlite) from the individual genome files.
 
-use process-tax.pl to download taxdump and create nodes.tsv
+Everything referenced here lives in this module's scripts/ directory. The p3x-
+tools are wrapped into $KB_TOP/bin by a build and so are on PATH; db-schema.sql
+is data, read by path. The order below is load-bearing:
+p3x-create-taxonomy-lineage reads TaxonInDatabase, which does not exist until
+p3x-create-databases-lookup has walked the database tree.
 
-Set up db file
+1. Download the NCBI taxdump and build the node table.
 
-rm db.sqlite3
-sqlite3 db.sqlite
-> .read db-schema.sql
+   p3x-create-taxonomy-nodes
 
-Create nodes.tsv in the NCBI taxdump directory (need notes on that)
-Load taxonomy data
+   Creates taxdump-<YYYY-MM-DD>/ under the current directory and writes
+   nodes.tsv into it, with columns tax_id,parent,rank. The file is
+   comma-separated despite the name, which is why the import below needs
+   .mode csv. The script refuses to run if the dated directory exists.
 
-sqlite3 db.sqlite
-sqlite> .mode csv
-sqlite> .import nodes.tsv TaxNode
+2. Create the database and load the taxonomy.
 
+   sqlite3 db.sqlite
+   sqlite> .read scripts/db-schema.sql
+   sqlite> .mode csv
+   sqlite> .import taxdump-<YYYY-MM-DD>/nodes.tsv TaxNode
 
-Load blast data
-p3x-create-databases-lookup --curated-directory ref --sqlite db.sqlite /vol/blastdb/bvbrc-service blast.db
+3. Load the blast database catalog.
 
-Create lineage lookup
-perl ~/P3/dev-slurm/dev_container/modules/homology_service/mk-lineage /disks/tmp/blast.sqlite 
+   p3x-create-databases-lookup --curated-directory ref --sqlite db.sqlite \
+       /vol/blastdb/bvbrc-service blast.db
+
+4. Build the lineage lookup.
+
+   p3x-create-taxonomy-lineage db.sqlite
+
+Check afterwards that TaxNode has as many rows as nodes.tsv has lines. Note
+that sqlite3 is not necessarily on PATH; perl -MDBI works for inspection.
+
+Two things to be aware of when reading the result:
+
+  - --curated-directory matches dirname() of the path relative to the database
+    directory, so the argument has to be exactly that relative name. In
+    data.2022-0916 it did not match and all 4058 GenomeGroup rows came out
+    curated=0, which makes the "NOT g.curated" filter in
+    BlastDatabasesSQL::search_taxa inert.
+
+  - p3x-create-taxonomy-lineage inserts a (taxon_id, NULL) row for any taxon in
+    TaxonInDatabase that is absent from TaxNode, and those taxa then match
+    nothing. data.2022-0916 has 63 of them. Do step 1 at catalog-build time rather
+    than reusing a taxdump fetched at the start of the rebuild, so the
+    taxonomy is never older than the genome set.
