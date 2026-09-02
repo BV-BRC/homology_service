@@ -15,6 +15,15 @@ If --reference and/or --representative is selected, limit to only those genomes.
 
 If --taxon is selected, limit to the genomes at or below that level of the taxonomy.
 
+Sequence data comes from the per-genome files under the downloads tree when
+they are present, and from the data API otherwise. Bacterial builds are mostly
+cache hits (roughly 80%, though coverage is uneven across the genome id range);
+the misses are fetched in batches, not one genome at a time.
+
+Viral builds must pass --no-check-files. No viral genome is written to the
+download site, so every cache probe would miss, and the probe itself is a stat
+per genome against a busy shared filesystem.
+
 =cut
 
 use strict;
@@ -25,6 +34,7 @@ use Data::Dumper;
 use LPTScheduler;
 use JSON::XS;
 use File::Temp;
+use IO::File;
 use File::Path qw(make_path remove_tree);
 use IPC::Run qw(run);
 use PerlIO::via::Blockwise;
@@ -41,7 +51,7 @@ my($opt, $usage) = describe_options("%c %o dbtype ftype blast-db-file",
 				    ["representative", "Include representative genomes"],
 				    ["create-nr", "Create nonredundant database"],
 				    ["quality-check!", "Require quality of Good (invert with --no-quality-check)", { default => 1 }],
-				    ["check-files!", "Check for download files (invert with --no-check-files)", { default => 1 }],
+				    ["check-files!", "Build from the per-genome files under the downloads tree where they exist, fetching only the rest from the data API. Invert with --no-check-files to read everything from the data API -- which is what viral builds must do, as viral genomes are not written to the download site", { default => 1 }],
 				    ["viral", "Create viral database. Causes CDS & mat_peptide features to be included"],
 				    ["complete", "Include only genome_status=Complete genomes"],
 				    ['taxon-filter=s%' => "Define a taxon filter file", { default => {} }],
@@ -183,6 +193,29 @@ for my $gid (@$genomes)
     push(@new, $gid);
 }
 @$genomes = @new;
+
+#
+# Guard against the same genome appearing twice.
+#
+# This was the shape of the 2026-08 corruption: deep paging in the data API
+# returned some genomes twice and silently dropped an equal number, and a
+# genome fetched twice produces duplicate FASTA seqids, which makeblastdb
+# -parse_seqids rejects outright -- so the whole database fails to build, three
+# stages downstream of the actual fault. P3DataAPI now uses cursor paging and
+# should never hand us a duplicate, but this is the one point where the entire
+# list is in hand, and the check is far cheaper than the failure it prevents.
+#
+{
+    my %seen;
+    my @uniq = grep { !$seen{$_->{genome_id}}++ } @$genomes;
+    if (@uniq != @$genomes)
+    {
+	my @dups = sort grep { $seen{$_} > 1 } keys %seen;
+	warn "Dropping " . (scalar(@$genomes) - scalar(@uniq)) .
+	     " duplicate genome(s) from the query result: @dups\n";
+	@$genomes = @uniq;
+    }
+}
 
 print STDERR "Building database with " . scalar(@$genomes) . " genomes\n";
 
@@ -476,29 +509,6 @@ sub data_callback_nr
 sub process_from_download_files
 {
     my $sched = LPTScheduler->new($opt->parallel);
-    
-    open(GL, ">", $glist) or die "Cannot write $glist: $!";
-    my %tax;
-    
-    for my $g (@$genomes)
-    {
-	my($genome_id, $genome_name, $taxon_id, $genome_length) = @$g{qw(genome_id genome_name taxon_id genome_length)};
-	my $path;
-	if ($opt->check_files)
-	{
-	    $path = compute_path($genome_id, $ftype, $dbtype);
-	    # next unless $path;
-	}
-	
-	$g->{path} = $path;
-	$sched->add_work($g, $genome_length);
-	print GL "$genome_id\n";
-	$tax{$taxon_id} = 1;
-    }
-    close(GL);
-    open(TL, ">", $taxlist) or die "Cannot write $taxlist: $!";
-    print TL "$_\n" foreach sort { $a <=> $b  } keys %tax;
-    close(TL);
 
     #
     # Don't clean up. The forked processes will inherit the ref and
@@ -507,8 +517,40 @@ sub process_from_download_files
     my $tmpdir = File::Temp->newdir(CLEANUP => 0);
     my $dbdir = "$tmpdir/db";
     my $taxdir = "$tmpdir/tax";
-    
-    make_path($dbdir, $taxdir);
+    my $fetchdir = "$tmpdir/fetch";
+
+    make_path($dbdir, $taxdir, $fetchdir);
+
+    open(GL, ">", $glist) or die "Cannot write $glist: $!";
+    my %tax;
+    my @missing;
+
+    for my $g (@$genomes)
+    {
+	my($genome_id, $taxon_id) = @$g{qw(genome_id taxon_id)};
+
+	#
+	# compute_path only checks for the file in the contigs case (the
+	# feature branch has its -f test commented out), so test here rather
+	# than relying on the worker's open to fail. A zero-length file counts
+	# as a miss: it would contribute nothing and hide the genome.
+	#
+	$g->{path} = compute_path($genome_id, $ftype, $dbtype);
+	push(@missing, $g) unless ($g->{path} && -s $g->{path});
+
+	print GL "$genome_id\n";
+	$tax{$taxon_id} = 1;
+    }
+    close(GL);
+
+    my $fetched = prefetch_missing_genomes($api, \@missing, $fetchdir);
+    $_->{path} = $fetched->{$_->{genome_id}} for @missing;
+
+    $sched->add_work($_, $_->{genome_length}) for @$genomes;
+
+    open(TL, ">", $taxlist) or die "Cannot write $taxlist: $!";
+    print TL "$_\n" foreach sort { $a <=> $b  } keys %tax;
+    close(TL);
 
     my $cleanup = sub {
 	my $err;
@@ -652,6 +694,134 @@ sub process_from_download_files
     }
 
     return(\@dbf, $cleanup);
+}
+
+#
+# Fetch sequence data for the genomes that have no usable download file, and
+# write it out as per-genome files shaped exactly like the download files, so
+# the worker below cannot tell the difference.
+#
+# What this replaces: the worker used to notice the failed open and call
+# retrieve_{protein,dna}_features_in_genomes_to_temp([$genome_id]) /
+# retrieve_contigs_in_genomes_to_temp([$genome_id]) for that one genome. Those
+# helpers loop over their genome-id list and issue a query per genome, so
+# passing a list would not have batched anything -- it was one round trip per
+# cache miss no matter how it was called. Viral builds run with
+# --no-check-files and so never reach this path at all; bacterial builds miss
+# on roughly a fifth of their genomes, and the misses clump by genome id
+# range, so a single genus can be almost entirely uncached.
+#
+# Instead do what process_from_data_api already does: one in(genome_id,(...))
+# query per --batch-size genomes, demultiplexed into per-genome files by the
+# genome_id on each record.
+#
+sub prefetch_missing_genomes
+{
+    my($api, $missing, $fetchdir) = @_;
+
+    my %path;
+    return \%path unless @$missing;
+
+    printf STDERR "Prefetching %d genome(s) with no download file, in batches of %d\n",
+	scalar(@$missing), $opt->batch_size;
+
+    my $ftype_cond = $opt->viral
+	? [ "in", "feature_type", "(mat_peptide,CDS)" ]
+	: [ "eq", "feature_type", "CDS" ];
+
+    my @todo = @$missing;
+    while (@todo)
+    {
+	my @batch = splice(@todo, 0, $opt->batch_size);
+	my %fh;
+
+	#
+	# Open every file in the batch up front. A genome that turns out to
+	# have no records then still gets an empty file, which is the honest
+	# answer; leaving it absent would send the worker down its own
+	# per-genome fallback and undo the batching.
+	#
+	for my $g (@batch)
+	{
+	    my $p = "$fetchdir/$g->{genome_id}";
+	    my $f = IO::File->new($p, "w") or die "Cannot write $p: $!";
+	    $fh{$g->{genome_id}} = $f;
+	    $path{$g->{genome_id}} = $p;
+	}
+
+	my $genome_cond = [ "in", "genome_id",
+			    "(" . join(",", map { $_->{genome_id} } @batch) . ")" ];
+
+	if ($ftype eq 'features')
+	{
+	    my $key = ($dbtype eq 'aa') ? "aa_sequence_md5" : "na_sequence_md5";
+
+	    $api->query_cb("genome_feature",
+			   sub {
+			       my($data) = @_;
+			       my %by_md5;
+			       $api->lookup_sequence_data([map { $_->{$key} } @$data], sub {
+				   my $ent = shift;
+				   $by_md5{$ent->{md5}} = $ent->{sequence};
+			       });
+			       for my $ent (@$data)
+			       {
+				   my $f = $fh{$ent->{genome_id}} or next;
+				   my $seq = $by_md5{$ent->{$key}};
+				   if (!defined($seq) || $seq eq '')
+				   {
+				       warn "No $key sequence for $ent->{patric_id}, skipping\n";
+				       next;
+				   }
+				   print_alignment_as_fasta($f,
+					[$ent->{patric_id}, $ent->{product}, $seq]);
+				   $f->error
+				       and die "Write failed on $path{$ent->{genome_id}}: $!\n";
+			       }
+			       return 1;
+			   },
+			   $ftype_cond,
+			   [ "eq", "annotation", "PATRIC" ],
+			   $genome_cond,
+			   [ "select", "patric_id,product,genome_id,$key" ]);
+	}
+	else
+	{
+	    $api->query_cb("genome_sequence",
+			   sub {
+			       my($data) = @_;
+			       for my $ent (@$data)
+			       {
+				   my $f = $fh{$ent->{genome_id}} or next;
+				   #
+				   # Match the download .fna header, whose id is
+				   # the bare accession: the worker parses
+				   # /^(accn\|)?(\S+)/ and builds
+				   # lcl|<genome_id>.<accession> from it. A
+				   # record with no accession would otherwise
+				   # write a header the regex cannot key on.
+				   #
+				   my $id = $ent->{accession} || $ent->{sequence_id};
+				   print_alignment_as_fasta($f,
+					[$id,
+					 "$ent->{description} [ $ent->{genome_name} | $ent->{genome_id} ]",
+					 $ent->{sequence}]);
+				   $f->error
+				       and die "Write failed on $path{$ent->{genome_id}}: $!\n";
+			       }
+			       return 1;
+			   },
+			   $genome_cond,
+			   [ "select", "accession,sequence_id,description,genome_name,genome_id,sequence" ]);
+	}
+
+	for my $gid (keys %fh)
+	{
+	    $fh{$gid}->close or die "Close failed on $path{$gid}: $!\n";
+	}
+    }
+
+    return \%path;
 }
 
 sub compute_path
