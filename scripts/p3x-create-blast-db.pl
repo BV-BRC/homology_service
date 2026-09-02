@@ -47,6 +47,7 @@ use Bio::P3::HomologySearch::HomologySearch;
 
 my($opt, $usage) = describe_options("%c %o dbtype ftype blast-db-file",
 				    ['exclude-taxon=i@', "Do not include genomes in this taxon", { default => [] }],
+				    ['refrep-only-taxon=i@', "Within this taxon include only reference and representative genomes; genomes outside it are unaffected. Repeatable. Use for taxa whose clinical-surveillance depositions would otherwise swamp the database (SARS-CoV-2 in Coronaviridae)", { default => [] }],
 				    ["reference", "Include reference genomes"],
 				    ["representative", "Include representative genomes"],
 				    ["create-nr", "Create nonredundant database"],
@@ -147,6 +148,26 @@ push(@params, fq => 'taxon_lineage_ids:*');
 for my $not (@{$opt->exclude_taxon})
 {
     push(@params, fq => "-taxon_lineage_ids:$not");
+}
+
+#
+# Per-taxon reference/representative carve-out.
+#
+# --reference / --representative above are global: they constrain every genome
+# in the query. This is the narrow form -- drop the genomes that are inside the
+# named taxon AND are not reference or representative, leaving everything
+# outside the taxon untouched. Written as a single negated clause rather than
+# "-taxon OR refrep" because a bare negative as the left arm of an OR does not
+# reliably match in Solr.
+#
+# The motivating case is Coronaviridae: 9,413,387 of its 9,487,138 genomes
+# (99.2%) are SARS-CoV-2 clinical samples, of which exactly 22 are reference or
+# representative. Without this the family enumerates ~9.5M genomes -- which the
+# data API does not survive -- and would build an estimated 150 GB.
+#
+for my $rr_taxon (@{$opt->refrep_only_taxon})
+{
+    push(@params, fq => "-(taxon_lineage_ids:$rr_taxon -reference_genome:(Reference OR Representative))");
 }
 
 push @params, fq => (join(" OR ", @rr)) if @rr;

@@ -24,6 +24,8 @@ my($opt, $usage) = describe_options("%c %o dbtype ftype output-dir",
 				    ["n-build-threads=i", "Number of parallel builds to run", { default => 6 }],
 				    ["n-db-threads=i", "Number of database lookup threads to run inside each build", { default => 2}],
 				    ["viral", "Build for viral families"],
+				    ['refrep-only-taxon=i@', "Within this taxon include only reference and representative genomes (passed through to p3x-create-blast-db). Repeatable", { default => [] }],
+				    ["sars2-carveout!", "For viral builds, restrict SARS-CoV-2 (taxon 2697049) to its reference and representative genomes. On by default; --no-sars2-carveout includes all 9.4M clinical depositions", { default => 1 }],
 				    ["build-tempdir=s", "Tmpdir for build tool", { default => "/dev/shm" }],
 				    ["all-genera", "Build for all genera instead of selected pathogens"],
 				    ['taxon-filter=s%' => "Define a taxon filter file", { default => {} }],
@@ -188,6 +190,20 @@ my @all;
 my @exclude;
 
 #
+# SARS-CoV-2 is 99.2% of Coronaviridae -- 9,413,387 of 9,487,138 genomes, all
+# but 22 of them clinical surveillance depositions with no reference or
+# representative flag. Enumerating that family is roughly 380 cursor pages and
+# does not survive the data API (it 502'd the 2026-08 rebuild), and the database
+# it would build is an estimated 150 GB, 30x what the rest of the viral set
+# takes together. Restricting the one taxon to reference and representative
+# genomes leaves the other 73,751 Coronaviridae untouched.
+#
+use constant SARS2_TAXON => 2697049;
+
+my @refrep_only = @{$opt->refrep_only_taxon};
+push(@refrep_only, SARS2_TAXON) if $opt->viral && $opt->sars2_carveout;
+
+#
 # Disable quality check for viral genomes.
 # Also determine the catchall taxon id.
 #
@@ -223,6 +239,8 @@ else
 # Pass the flag through so a targeted repair is possible.
 #
 push(@create_options, "--overwrite") if $opt->overwrite;
+
+push(@create_options, map { ("--refrep-only-taxon", $_) } @refrep_only);
 
 push(@create_options, @taxon_opts);
     
@@ -347,7 +365,6 @@ sub compute_genome_lists
     {
 	push(@params, fq => 'superkingdom:Viruses');
 	$facet = 'family';
-	# push(@params, fq => "-taxon_id:2697049");
     }
     else
     {
@@ -356,6 +373,17 @@ sub compute_genome_lists
     }
     
     push(@params, fq => "(" . (join(" OR ", @rr)) . ")") if @rr;
+
+    #
+    # Mirror the per-taxon carve-out the builds will use, so the size this
+    # returns is the size of the database that actually gets built. Without it
+    # Coronaviridae is scheduled as ~9.5M genomes of sequence it will not
+    # contain, and LPT puts it first and alone.
+    #
+    for my $rr_taxon (@refrep_only)
+    {
+	push(@params, fq => "-(taxon_lineage_ids:$rr_taxon -reference_genome:(Reference OR Representative))");
+    }
     
     push(@params, fq => "genome_status:Complete") if $opt->complete;
     
