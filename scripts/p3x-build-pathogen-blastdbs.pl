@@ -33,6 +33,7 @@ my($opt, $usage) = describe_options("%c %o dbtype ftype output-dir",
 				    ["log-output!", "Log output of individual blast runs to files", { default => 1 }],
 				    ["log-dir=s", "Directory to write log data", { default => "." }],
 				    ["dump-sizes", "Run the size estimation only and dump data"],
+				    ["overwrite|f", "Rebuild databases that already exist instead of skipping them"],
 				    ["help|h", "Show this help message"]);
 
 print($usage->text), exit 0 if $opt->help;
@@ -230,6 +231,14 @@ else
     # push(@create_options, "--no-check-files");
     $catchall_taxon = 2;
 }
+
+#
+# p3x-create-blast-db skips any database that already has a non-empty .taxids
+# plus its blast files, so without this a rerun into a populated directory
+# cannot rebuild anything -- which is how data.2022-0916 shipped damaged.
+# Pass the flag through so a targeted repair is possible.
+#
+push(@create_options, "--overwrite") if $opt->overwrite;
 
 push(@create_options, map { ("--refrep-only-taxon", $_) } @refrep_only);
 
