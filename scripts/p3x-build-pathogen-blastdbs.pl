@@ -254,23 +254,51 @@ for my $g (sort { $genus_size->{$a} <=> $genus_size->{$b} } keys %$genus_size)
 exit if $opt->dump_sizes;
 	
 
-for my $tax (@target_ids)
+#
+# A genus name does not identify a genus. Taxonomy carries two distinct genera
+# named Ponticoccus (519422, Actinobacteria; 983507, Alphaproteobacteria), and
+# three further names collide the same way: "Candidatus Dwaynesavagella",
+# Pseudoruminococcus, Venteria. Every output path here is keyed on the name, so
+# iterating taxon ids built one database twice and the second build silently
+# replaced the first -- every genome of the losing genus was dropped, and the
+# only trace was a "already exists, skipping build" line in a child .err log.
+#
+# Build one database per *name*, passing every taxon that bears it.
+# p3x-create-blast-db ORs its --taxon values into a single lineage filter, and
+# the catalog maps taxa onto databases through the .taxlist sidecar rather than
+# through the filename, so both genera remain individually addressable in
+# db.sqlite. This also matches the size we schedule with: compute_genome_lists
+# facets on the Solr `genus` field, which is the name, so its count already
+# covers both genera and was never per-taxon to begin with.
+#
+my %ids_for_name;
+push(@{$ids_for_name{$taxon_name{$_}}}, $_) for @target_ids;
+
+for my $genus_name (sort keys %ids_for_name)
 {
-    my $genus = $taxon_name{$tax};
-    my $dat;
-    my $create_params = ["--taxon", $tax, @create_options];
+    my $taxa = [ sort { $a <=> $b } @{$ids_for_name{$genus_name}} ];
+    my $genus = $genus_name;
 
-    my $sz = 1;
+    if (@$taxa > 1)
+    {
+	print STDERR "Note: '$genus_name' names " . scalar(@$taxa) .
+	    " distinct taxa (" . join(", ", @$taxa) . "); " .
+	    "building them into one database.\n";
+    }
+
+    my $create_params = [(map { ("--taxon", $_) } @$taxa), @create_options];
+
     my $glist = [];
-
     my $sz = $genus_size->{$genus} / 1e6;
 
     $genus =~ s/\s/_/g;
-    my $item = { genus => $genus, tax => $tax, size => $sz, list => $glist, params => $create_params };
+    my $tax_label = join(",", @$taxa);
+    my $item = { genus => $genus, tax => $tax_label, taxa => $taxa,
+		 size => $sz, list => $glist, params => $create_params };
     push(@all, $item);
     my $n = @$glist;
-    print STDERR "$genus\t$tax\t$n\t$sz\n";
-    push(@exclude, $tax);
+    print STDERR "$genus\t$tax_label\t$n\t$sz\n";
+    push(@exclude, @$taxa);
 
     $sched->add_work($item, $sz);
 }

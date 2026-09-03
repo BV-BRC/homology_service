@@ -174,7 +174,19 @@ push @params, fq => (join(" OR ", @rr)) if @rr;
 
 if (@{$opt->taxon})
 {
-    push(@params, fq => "taxon_lineage_ids:" . join(" OR ",  @{$opt->taxon}));
+    #
+    # The parentheses are load bearing. "taxon_lineage_ids:A OR B" qualifies
+    # only A; the bare B is resolved against Solr's default field, so every
+    # --taxon after the first selected a different set than the one asked for
+    # -- not a subset, a wrong set. Measured against the ref/ invocation
+    # "--taxon 2 --taxon 2157": the correct union is 1,428,217 genomes
+    # (1,390,544 Bacteria + 37,673 Archaea) and the unparenthesized form
+    # returns 1,429,101, i.e. 884 genomes that match the string 2157 somewhere
+    # rather than carrying it in their lineage. It went unnoticed because the
+    # driver only ever passed one taxon -- until it had to pass two for the
+    # genus names that denote more than one taxon.
+    #
+    push(@params, fq => "taxon_lineage_ids:(" . join(" OR ",  @{$opt->taxon}) . ")");
 }
 
 
