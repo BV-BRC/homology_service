@@ -55,6 +55,7 @@ my($opt, $usage) = describe_options("%c %o dbtype ftype blast-db-file",
 				    ["check-files!", "Build from the per-genome files under the downloads tree where they exist, fetching only the rest from the data API. Invert with --no-check-files to read everything from the data API -- which is what viral builds must do, as viral genomes are not written to the download site", { default => 1 }],
 				    ["viral", "Create viral database. Causes CDS & mat_peptide features to be included"],
 				    ["complete", "Include only genome_status=Complete genomes"],
+				    ["exclude-deprecated!", "Exclude genome_status=Deprecated genomes (invert with --no-exclude-deprecated)", { default => 1 }],
 				    ['taxon-filter=s%' => "Define a taxon filter file", { default => {} }],
 				    ["blastdb-version=i", "Use this blastdb version", { default => 5 }],
 				    ['taxon=i@', "Limit to this taxon", { default => [] }],
@@ -233,6 +234,16 @@ for my $f (@{$opt->unset_field})
 }
 
 push(@params, fq => "genome_status:Complete") if $opt->complete;
+
+#
+# Deprecated genomes have been superseded or withdrawn upstream, so a hit in
+# one sends the user to a genome the site no longer shows. They are not
+# excluded by anything else here: genome_quality is an independent field, and
+# 53,195 of the public Good bacterial genomes are also Deprecated (4.9%), as
+# are 702,603 public viral (4.5%). The viral path has no quality check at all,
+# so this is its only such gate.
+#
+push(@params, fq => '-genome_status:Deprecated') if $opt->exclude_deprecated;
 
 push(@params, fl => "genome_id,genome_name,taxon_id,genome_length,genus");
 
