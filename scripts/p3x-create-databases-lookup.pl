@@ -74,6 +74,18 @@ for my $tag (sort keys %by_tag)
 sub process_path
 {
     return unless /\.taxids/;
+    #
+    # A zero-length .taxids means the build produced no records for this
+    # database -- p3x-create-blast-db logs "Skipping creation of empty
+    # database" and writes no BLAST index. Cataloguing it would create a
+    # BlastDatabase row whose path resolves to nothing; search degrades
+    # gracefully (find_db_in_path warns) but the catalog would be wrong.
+    #
+    if (!-s $_)
+    {
+	warn "Skipping empty taxid map $File::Find::name\n";
+	return;
+    }
     return if $process_re && ! /$process_re/;
     my $taxids_file = $_;
     my $dir = $File::Find::name;
