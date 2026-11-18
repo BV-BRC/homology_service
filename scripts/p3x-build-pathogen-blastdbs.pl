@@ -28,6 +28,7 @@ my($opt, $usage) = describe_options("%c %o dbtype ftype output-dir",
 				    ["sars2-carveout!", "For viral builds, restrict SARS-CoV-2 (taxon 2697049) to its reference and representative genomes. On by default; --no-sars2-carveout includes all 9.4M clinical depositions", { default => 1 }],
 				    ["build-tempdir=s", "Tmpdir for build tool", { default => "/dev/shm" }],
 				    ["all-genera", "Build for all genera instead of selected pathogens"],
+				    ["clade-ladder", "Build the genomes that the genus (or, with --viral, family) partition leaves out: one database per deepest taxonomic rank each genome actually carries. Replaces the genus enumeration entirely; use a separate output directory"],
 				    ['taxon-filter=s%' => "Define a taxon filter file", { default => {} }],
 				    ["check-size!", "Check the genus size to schedule work", { default => 1 }],
 				    ["log-output!", "Log output of individual blast runs to files", { default => 1 }],
@@ -50,8 +51,26 @@ $ftype eq 'features' or $ftype eq 'contigs' or die "Invalid ftype $ftype (valid 
 
 make_path($opt->log_dir);
 
+#
+# Clear the previous run's failure markers, or a clean rerun still reports the
+# failures it just repaired.
+#
+unlink($_) for glob($opt->log_dir . "/FAILED.*");
+
 $ENV{TMPDIR} = "/disks/tmp";
 
+#
+# Superseded by --clade-ladder; left at 0, and do not turn it on.
+#
+# The "other" database is meant to catch the genomes the genus partition leaves
+# out, but as written it cannot: it passes one --exclude per built genus, which
+# is ~15,000 "-taxon_lineage_ids:<n>" clauses in a single Solr query (the API
+# tier wedged on a 165 KB request body on 2026-09-03), and it is a *single* LPT
+# work item, so 700 Gbp would build single-threaded while 11 of 12 workers idle.
+#
+# --clade-ladder covers the same genomes as one database per deepest rank each
+# genome actually carries -- parallel, and reachable by real lineage.
+#
 my $build_other = 0;
 
 my $n_procs = $opt->{n_build_threads};
@@ -120,7 +139,15 @@ $opt->{all_genera} = 1 if $opt->viral;
 my @target_ids;
 my %taxon_name;
 
-if ($opt->all_genera)
+if ($opt->clade_ladder)
+{
+    #
+    # The ladder does not enumerate taxa at all -- it selects on the genome
+    # record's own rank fields, so there is no name-to-taxon-id map to build.
+    #
+    %genera = ();
+}
+elsif ($opt->all_genera)
 {
     #
     # Clear the hardcoded list of genera and build for all.
@@ -246,31 +273,107 @@ push(@create_options, @taxon_opts);
     
 @target_ids = sort { $a <=> $b } @target_ids;
 
-my $genus_size = compute_genome_lists(\@target_ids);
-for my $g (sort { $genus_size->{$a} <=> $genus_size->{$b} } keys %$genus_size)
+my $genus_size;
+my $ladder;
+
+if ($opt->clade_ladder)
 {
-    print "$g\t" . int($genus_size->{$g} / 1e6) . "\n";
+    $ladder = compute_clade_lists();
+    for my $c (@$ladder)
+    {
+	print join("\t", $c->{tag}, ($c->{rank} // 'residue'),
+		   int($c->{bp} / 1e6)) . "\n";
+    }
+    printf STDERR "clade ladder: %d databases, %.1f Gbp\n",
+	scalar(@$ladder), (eval { my $t = 0; $t += $_->{bp} for @$ladder; $t } / 1e9);
+}
+else
+{
+    $genus_size = compute_genome_lists(\@target_ids);
+    for my $g (sort { $genus_size->{$a} <=> $genus_size->{$b} } keys %$genus_size)
+    {
+	print "$g\t" . int($genus_size->{$g} / 1e6) . "\n";
+    }
 }
 exit if $opt->dump_sizes;
+
+#
+# Ladder items. One database per clade, keyed on the clade *name* rather than
+# on a taxon id: --field/--unset-field select on the genome record's own rank
+# fields, so there is no taxon to pass, and the names are unique within the
+# ladder and collision-free against every tag already built.
+#
+# The catalog still resolves these by taxon, because the .taxlist sidecar is
+# derived from the genomes that land in the database, not from the selection.
+#
+if ($opt->clade_ladder)
+{
+    my $spec = clade_ladder_spec();
+    my @roots = map { ("--taxon", $_) } @{$spec->{roots}};
+
+    for my $c (@$ladder)
+    {
+	my $create_params = [ @roots,
+			      ($c->{rank} ? ("--field", "$c->{rank}=$c->{name}") : ()),
+			      (map { ("--unset-field", $_) } @{$c->{unset}}),
+			      @create_options ];
+
+	my $sz = $c->{bp} / 1e6;
+	my $item = { genus => $c->{tag}, tax => ($c->{rank} // 'residue'),
+		     taxa => [], size => $sz, list => [], params => $create_params };
+	push(@all, $item);
+	print STDERR "$c->{tag}\t$item->{tax}\t0\t$sz\n";
+
+	$sched->add_work($item, $sz);
+    }
+}
 	
 
-for my $tax (@target_ids)
+#
+# A genus name does not identify a genus. Taxonomy carries two distinct genera
+# named Ponticoccus (519422, Actinobacteria; 983507, Alphaproteobacteria), and
+# three further names collide the same way: "Candidatus Dwaynesavagella",
+# Pseudoruminococcus, Venteria. Every output path here is keyed on the name, so
+# iterating taxon ids built one database twice and the second build silently
+# replaced the first -- every genome of the losing genus was dropped, and the
+# only trace was a "already exists, skipping build" line in a child .err log.
+#
+# Build one database per *name*, passing every taxon that bears it.
+# p3x-create-blast-db ORs its --taxon values into a single lineage filter, and
+# the catalog maps taxa onto databases through the .taxlist sidecar rather than
+# through the filename, so both genera remain individually addressable in
+# db.sqlite. This also matches the size we schedule with: compute_genome_lists
+# facets on the Solr `genus` field, which is the name, so its count already
+# covers both genera and was never per-taxon to begin with.
+#
+my %ids_for_name;
+push(@{$ids_for_name{$taxon_name{$_}}}, $_) for @target_ids;
+
+for my $genus_name (sort keys %ids_for_name)
 {
-    my $genus = $taxon_name{$tax};
-    my $dat;
-    my $create_params = ["--taxon", $tax, @create_options];
+    my $taxa = [ sort { $a <=> $b } @{$ids_for_name{$genus_name}} ];
+    my $genus = $genus_name;
 
-    my $sz = 1;
+    if (@$taxa > 1)
+    {
+	print STDERR "Note: '$genus_name' names " . scalar(@$taxa) .
+	    " distinct taxa (" . join(", ", @$taxa) . "); " .
+	    "building them into one database.\n";
+    }
+
+    my $create_params = [(map { ("--taxon", $_) } @$taxa), @create_options];
+
     my $glist = [];
-
     my $sz = $genus_size->{$genus} / 1e6;
 
     $genus =~ s/\s/_/g;
-    my $item = { genus => $genus, tax => $tax, size => $sz, list => $glist, params => $create_params };
+    my $tax_label = join(",", @$taxa);
+    my $item = { genus => $genus, tax => $tax_label, taxa => $taxa,
+		 size => $sz, list => $glist, params => $create_params };
     push(@all, $item);
     my $n = @$glist;
-    print STDERR "$genus\t$tax\t$n\t$sz\n";
-    push(@exclude, $tax);
+    print STDERR "$genus\t$tax_label\t$n\t$sz\n";
+    push(@exclude, @$taxa);
 
     $sched->add_work($item, $sz);
 }
@@ -338,40 +441,60 @@ $sched->run(sub {}, sub {
 				      "2>", $opt->log_dir . "/log.$genus.err",)
 		  : ()),
 		);
-    $ok or die "Failure running @cmd: $! $?\n";
+    #
+    # Do not die here. LPTScheduler::run forks one child per bin and each child
+    # walks its bin sequentially, so a die abandons every item the bin has not
+    # reached yet -- and the parent never learns, because the scheduler
+    # discards the child exit status. The first viral clade run lost 182 of 901
+    # databases to two failures that had nothing to do with them.
+    #
+    # Record the failure as a marker file instead and keep going; the parent
+    # counts the markers after the run and exits nonzero, so a rerun (the skip
+    # guard makes it cheap) repairs exactly what failed.
+    #
+    if (!$ok)
+    {
+	my $err = "Failure running @cmd: $! $?";
+	warn "$err\n";
+	if (open(my $fh, ">", $opt->log_dir . "/FAILED.$genus"))
+	{
+	    print $fh "$err\n";
+	    close($fh);
+	}
+    }
 });
 
-sub compute_genome_lists
+my @failed = sort map { s/.*\/FAILED\.//r } glob($opt->log_dir . "/FAILED.*");
+if (@failed)
 {
-    my($genera) = @_;
+    print STDERR "\n" . scalar(@failed) . " database(s) failed to build:\n";
+    print STDERR "    $_\n" for @failed;
+    print STDERR "Rerun the same command to repair them; databases that " .
+	"succeeded are skipped.\n";
+    exit 1;
+}
+
+#
+# The filters every sizing query shares with the builds it is sizing. Kept in
+# one place so compute_genome_lists and compute_clade_lists cannot drift: a
+# sizing query that does not match the build's selection schedules work that
+# does not exist (see the Coronaviridae note below).
+#
+sub base_query_params
+{
     my @params;
-    
+
     my @rr;
     push(@rr, "reference_genome:Reference") if $opt->reference;
     push(@rr, "reference_genome:Representative") if $opt->representative;
-    
+
     #
     # Require lineage.
     #
     push(@params, fq => 'taxon_lineage_ids:*');
 
-    if (ref($genera) && @$genera)
-    {
-	push(@params, fq => "taxon_lineage_ids:(" . join(" OR ",  @$genera) . ")");
-    }
+    push(@params, fq => ($opt->viral ? 'superkingdom:Viruses' : '-superkingdom:Viruses'));
 
-    my $facet;
-    if ($opt->viral)
-    {
-	push(@params, fq => 'superkingdom:Viruses');
-	$facet = 'family';
-    }
-    else
-    {
-	push(@params, fq => '-superkingdom:Viruses');
-	$facet = 'genus';
-    }
-    
     push(@params, fq => "(" . (join(" OR ", @rr)) . ")") if @rr;
 
     #
@@ -404,7 +527,116 @@ sub compute_genome_lists
     
     push(@params, q => "*:*");
 
-    # unshift(@params, facet => 'true', 'facet.field' => $facet);
+    return @params;
+}
+
+#
+# The deepest-available-rank ladder.
+#
+# The genus (bacterial) and family (viral) partitions leave out every genome
+# that carries no value at that rank -- 270,225 bacterial/archaeal genomes
+# (701.6 Gbp, almost all MAGs and uncultured environmental bins) and 191,648
+# viral ones as of 2026-09. They are in no database at all, so no taxon_list
+# search can reach them.
+#
+# The ladder covers them by walking outward from the missing rank and building
+# one database per clade at the first rank each genome actually has. Rung i
+# selects "has <rung i>, and has none of the ranks below it", which makes the
+# rungs disjoint by construction; the residue database takes what is left.
+#
+# Viral rung 1 is *genus*, which is deeper than the family the viral partition
+# is keyed on: 13,187 viral genomes carry a genus but no family, a taxonomy
+# hole rather than an unclassified genome.
+#
+# species is deliberately not a rung. 270,214 of the 270,225 bacterial genomes
+# have one, but they are placeholders -- "uncultured Lachnospiraceae bacterium"
+# is 16,825 genomes -- so it would produce 9,078 databases whose names restate
+# the clade above them.
+#
+sub clade_ladder_spec
+{
+    return $opt->viral
+	? { missing  => 'family',
+	    rungs    => [qw(genus order class phylum kingdom)],
+	    roots    => [10239],
+	    residue  => 'Viruses-unclassified' }
+	: { missing  => 'genus',
+	    rungs    => [qw(family order class phylum)],
+	    roots    => [2, 2157],
+	    residue  => 'Bacteria-Archaea-unclassified' };
+}
+
+#
+# One entry per database to build, in ladder order:
+#   { rank, name, tag, bp, unset => [ranks that must be absent] }
+# The residue entry has rank and name undef.
+#
+sub compute_clade_lists
+{
+    my $spec = clade_ladder_spec();
+    my @unset = ($spec->{missing});
+    my @out;
+
+    for my $rank (@{$spec->{rungs}})
+    {
+	my @params = base_query_params();
+	push(@params, fq => "taxon_lineage_ids:(" . join(" OR ", @{$spec->{roots}}) . ")");
+	push(@params, fq => "-$_:*") for @unset;
+	push(@params, fq => "$rank:*");
+	push(@params, "json.facet" =>
+	     $json->encode({ b => { type => 'terms', field => $rank, limit => -1,
+				    facet => { dna_size => 'sum(genome_length)' } } }));
+
+	my $buckets;
+	$api->solr_query_list("genome", \@params, 1, sub {
+	    $buckets = $_[0]->{facets}->{b}->{buckets};
+	    return ();
+	});
+
+	for my $b (sort { $a->{val} cmp $b->{val} } @$buckets)
+	{
+	    my $tag = $b->{val};
+	    $tag =~ s/\s/_/g;
+	    push(@out, { rank => $rank, name => $b->{val}, tag => $tag,
+			 bp => $b->{dna_size}, unset => [@unset] });
+	}
+
+	push(@unset, $rank);
+    }
+
+    #
+    # The residue: no value at any rung.
+    #
+    my @params = base_query_params();
+    push(@params, fq => "taxon_lineage_ids:(" . join(" OR ", @{$spec->{roots}}) . ")");
+    push(@params, fq => "-$_:*") for @unset;
+    push(@params, "json.facet" => $json->encode({ dna_size => 'sum(genome_length)' }));
+
+    my $bp;
+    $api->solr_query_list("genome", \@params, 1, sub {
+	$bp = $_[0]->{facets}->{dna_size};
+	return ();
+    });
+
+    push(@out, { rank => undef, name => undef, tag => $spec->{residue},
+		 bp => ($bp || 0), unset => [@unset] });
+
+    return \@out;
+}
+
+sub compute_genome_lists
+{
+    my($genera) = @_;
+
+    my @params = base_query_params();
+
+    if (ref($genera) && @$genera)
+    {
+	push(@params, fq => "taxon_lineage_ids:(" . join(" OR ",  @$genera) . ")");
+    }
+
+    my $facet = $opt->viral ? 'family' : 'genus';
+
     push(@params, "json.facet" => $json->encode({genera =>  { type => 'terms', field => $facet, limit => -1,
 								  facet => { dna_size => 'sum(genome_length)' }
 							      } }));

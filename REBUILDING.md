@@ -136,6 +136,21 @@ Every genus produces a non-empty `.err` in normal operation — it carries
 "Skipping duplicate id" and "Bad sequence" warnings — so a non-empty `.err` is
 not a failure signal by itself.
 
+**A failed database is `$LOGDIR/FAILED.<tag>`, and the driver exits 1.** That is
+the only summary you get: `LPTScheduler::run` forks one child per bin and
+discards the child exit status, so a `die` in the build callback used to abandon
+every item that bin had not reached yet, silently — the first viral clade run
+lost **182 of 901** databases to two unrelated failures. The callback now warns,
+drops a marker, and carries on. Stale markers are cleared at startup, so after a
+run:
+
+```bash
+ls $NEW/logs/<stage>/FAILED.* 2>/dev/null | sed 's|.*/FAILED\.||'
+```
+
+is the exact repair list, and rerunning the same command rebuilds only those
+(everything that succeeded has a `.taxids` and is skipped).
+
 ## Stage 2 — viral, by family
 
 ```bash
@@ -212,6 +227,261 @@ p3x-create-blast-db --taxon 11118 --refrep-only-taxon 2697049 \
     --max-missing-fraction 0.03 --title Coronaviridae --parallel 2 \
     aa features $NEW/by-genus-viral/Coronaviridae
 ```
+
+## Stage 2b — the clade ladder (genomes with no genus / no family)
+
+Stages 1 and 2 partition on **genus** (bacterial) and **family** (viral). A
+genome carrying no value at that rank matches no bucket and lands in **no
+database at all** — it is unreachable by every ordinary `taxon_list` search.
+Measured 2026-09-11 against the same filters the builds use:
+
+| set | genomes | bp | share of eligible |
+|---|---|---|---|
+| bacterial/archaeal, `-genus:*` | 270,225 | 701.6 Gbp | 24.8% of 1,088,901 |
+| viral, `-family:*` | 191,648 | 3.16 Gbp | 1.2% of 15,564,367 |
+
+Almost all of the bacterial set is MAGs and uncultured environmental bins, i.e.
+the fastest-growing part of BV-BRC. **`--clade-ladder` is the stage that covers
+them**, building one database per *deepest taxonomic rank each genome actually
+carries* rather than one catch-all. Do not use `$build_other` in
+`p3x-build-pathogen-blastdbs.pl` — the comment there explains why it cannot
+work.
+
+```bash
+for spec in "aa features" "dna features" "dna contigs"; do
+    set -- $spec
+    p3x-build-pathogen-blastdbs --clade-ladder \
+        --n-build-threads 12 --n-db-threads 2 \
+        --log-dir $NEW/logs/clade-bacterial.$2.$1 \
+        $1 $2 $NEW/by-clade-bacterial
+done
+
+for spec in "aa features" "dna features" "dna contigs"; do
+    set -- $spec
+    p3x-build-pathogen-blastdbs --clade-ladder --viral \
+        --n-build-threads 12 --n-db-threads 2 \
+        --log-dir $NEW/logs/clade-viral.$2.$1 \
+        $1 $2 $NEW/by-clade-viral
+done
+```
+
+`by-clade-bacterial/` and `by-clade-viral/` must be **real directories inside
+the generation**, not symlinks: `Config.pm.tt` interpolates a single scalar into
+a one-element `blast_db_search_path`, so everything must live under one root,
+and `p3x-create-databases-lookup` walks with `File::Find` and no `follow`. No
+config change is needed — `find_db_in_path` just joins the search path to the
+catalog's relative path.
+
+### How the ladder selects
+
+`--clade-ladder` bypasses the taxon enumeration entirely. It selects on the
+genome record's own rank fields through two new `p3x-create-blast-db` options:
+
+```
+--field family=Lachnospiraceae --unset-field genus
+```
+
+i.e. "the Lachnospiraceae that have no genus". Rung *i* requires the rung's rank
+to be set and every deeper rung's rank to be unset, which makes the rungs
+disjoint by construction; a final residue database takes the genomes with no
+rank at all. The field names are allowlisted (the value is interpolated into a
+Solr `fq`), and the quoting of the value is load-bearing — 270 of the 1,116
+bacterial clade names are two words, and unquoted the second word resolves
+against the default field.
+
+**Bacterial** (`-genus:*`, scoped to `taxon_lineage_ids:(2 OR 2157)`,
+`genome_quality:Good`):
+
+| rung | selector | genomes | bp | databases |
+|---|---|---|---|---|
+| 1 | `family:*` | 112,138 | 304.4 Gbp | 561 |
+| 2 | `-family:* order:*` | 50,312 | 133.5 Gbp | 254 |
+| 3 | `… class:*` | 52,603 | 126.9 Gbp | 123 |
+| 4 | `… phylum:*` | 51,315 | 128.9 Gbp | 178 |
+| 5 | residue → `Bacteria-Archaea-unclassified` | 3,857 | 8.0 Gbp | 1 |
+| | **total** | **270,225** | **701.6 Gbp** | **1,117** |
+
+**Viral** (`-family:*`, scoped to `taxon_lineage_ids:10239`, no quality filter):
+
+| rung | selector | databases |
+|---|---|---|
+| 1 | `genus:*` | 848 |
+| 2 | `-genus:* order:*` | 35 |
+| 3 | `… class:*` | 7 |
+| 4 | `… phylum:*` | 8 |
+| 5 | `… kingdom:*` | 2 |
+| 6 | residue → `Viruses-unclassified` | 1 |
+| | **total** (191,648 genomes, 3.16 Gbp) | **901** |
+
+Viral rung 1 is *genus*, which is **deeper** than the family the viral partition
+is keyed on: 13,187 viral genomes carry a genus but no family. That is a
+taxonomy hole, not an unclassified genome, and deepest-available puts them at
+genus.
+
+`species` is deliberately **not** a rung. 270,214 of the 270,225 bacterial
+genomes have one, but they are placeholders (`uncultured Lachnospiraceae
+bacterium`, 16,825 genomes), so it would produce 9,078 databases whose names
+restate the clade above them.
+
+### Before you commit the machine time
+
+**Run `--dump-sizes` on both ladders first** and check the totals against the
+tables above — it takes seconds, and a rung that is off by a lot means a missing
+`-<rank>:*` exclusion and double-counted genomes:
+
+```bash
+p3x-build-pathogen-blastdbs --clade-ladder          --dump-sizes --log-dir /tmp/x aa features $NEW/by-clade-bacterial
+p3x-build-pathogen-blastdbs --clade-ladder --viral  --dump-sizes --log-dir /tmp/x aa features $NEW/by-clade-viral
+```
+
+Each line is `<tag>\t<rank>\t<Mbp>`; the summary line on stderr gives the
+database count and total Gbp.
+
+- **Disk**: ~902 GB for all three types (measured 1.28 bytes/bp across the
+  finished generation). The 2026-09-12 run came in at **857 GB** — 852 GB
+  bacterial, 4.8 GB viral.
+- **Wall clock**: much less than the ~1.8 days estimated from the genus build.
+  Measured at 12 workers / 2 db threads, 2026-09-12:
+
+  | pass | elapsed |
+  |---|---|
+  | `clade-viral.features.aa` | 20 min |
+  | `clade-viral.features.dna` | 42 min |
+  | `clade-viral.contigs.dna` | 3 min |
+  | `clade-bacterial.features.aa` | 5 h 59 m |
+  | `clade-bacterial.features.dna` | 6 h 41 m |
+  | `clade-bacterial.contigs.dna` | 1 h 00 m |
+
+  The contigs passes are an order of magnitude faster than the feature passes
+  because they read the downloads tree directly instead of resolving sequence
+  md5s through the data API.
+- **Parallelism is not a problem.** The largest new bucket is `Lachnospiraceae`
+  at 71.0 Gbp — 7× *smaller* than `Escherichia` (518 Gbp), which the LPT
+  scheduler already handles as one item.
+- **Tags collide with nothing** — checked at every pairing against the 4,630
+  bacterial and 345 viral genus tags, and between the two ladders: zero, before
+  and after spaces are underscored.
+
+### A few clades legitimately build nothing
+
+The ladder is built from the *genome* facet, so a rung can contain a clade whose
+single genome has no PATRIC features of the type being built. The builder says
+so and moves on:
+
+```
+Building database with 1 genomes
+Skipping creation of empty database for .../Pimascovirales.features.faa
+```
+
+It leaves a zero-length `.taxids` and `.taxlist` beside a one-line `.glist` and
+no blast files. That is **not** a failure — there is no `FAILED.` marker and the
+run exits 0. Three viral clades did this on **both** feature passes
+(`Pimascovirales`, `Imitervirales`, `Asfuvirales`, one genome each), so
+`features.faa` and `features.fna` each have 898 real databases out of 901 tags.
+The contigs pass is unaffected — every genome has contigs — and built all 901. The catalog loader skips a
+zero-length `.taxids` rather than writing a phantom row, and the build's own
+skip guard requires a *non-empty* `.taxids`, so a rerun retries them harmlessly.
+
+### The catalog must be rebuilt from scratch
+
+Adding these directories to an existing generation is **not** an incremental
+catalog update. `p3x-create-databases-lookup.pl:143` dies "Already have database
+loaded" on a second run, so the whole tree has to be re-walked. Keep a
+`db.sqlite.taxnode-only.bak` — the catalog after Stage 4 step 2 and before step
+3 — and redo only steps 3 and 4 against a copy of it:
+
+```bash
+cp $NEW/db.sqlite.taxnode-only.bak $NEW/db.sqlite
+p3x-create-databases-lookup --curated-directory ref --sqlite $NEW/db.sqlite $NEW blast.db
+p3x-create-taxonomy-lineage $NEW/db.sqlite
+```
+
+That reuses the taxdump already loaded into `TaxNode` and takes about 3m 30s
+total, against the hour-plus of refetching and reimporting the taxonomy.
+
+The clade groups stay `curated=0` — that is what makes `search_taxa`'s
+`NOT g.curated` filter admit them, which is the entire point of the stage.
+
+Measured on the 2026-09-12 reload (4m 34s + 14s), the ladder adds exactly what
+it should:
+
+| table | before | after | delta |
+|---|---|---|---|
+| `GenomeGroup` | 4,977 | 6,995 | +2,018 = 1,117 + 901 |
+| `BlastDatabase` | 14,926 | 20,974 | +6,048 = 2,018 × 3 − the 6 zero-length `.taxids` |
+| `TaxonInDatabase` | 945,918 | 1,042,140 | +96,222 |
+| `GenomeGroup` where `curated` | 2 | 2 | unchanged (`ref/` only) |
+
+**`TaxonLineage` NULLs rise, and that is expected here.** The count went 196 →
+215. All 19 new ones are taxids that are absent from `TaxNode` entirely — BV-BRC
+genome records citing taxids newer than the loaded NCBI taxdump — and every one
+arrived with a clade database (`Pasteurellaceae` ×6, `Bacillales` ×3,
+`Caudoviricetes`, `Viruses-unclassified`, several `Candidatus_*`). The ladder did
+not create the defect; it catalogued 270,225 bacterial and 191,653 viral genomes
+that had never been in a database before, and 19 of them carry a taxid the
+taxdump predates.
+
+**What is actually lost is narrower than it looks.** Each of those taxa gets
+**two** `TaxonLineage` rows, not one: a self-row (`lineage_id = taxon_id`) and
+the NULL. So a search for the exact taxid still resolves — verified,
+`find_databases_for_taxa('faa', [2614261])` returns
+`by-clade-bacterial/Caldisphaeraceae.features.faa`. What is missing is the
+*ancestor* chain, because the taxon is not in `TaxNode` and no ancestry could be
+walked: a search one rank up will not pull that genome in. Measured across the
+whole catalog, **zero of the 20,974 databases are unreachable** — every one has
+at least one taxon with a usable lineage row:
+
+```sql
+CREATE TEMP TABLE reach AS
+  SELECT DISTINCT d.blast_database AS bd FROM TaxonInDatabase d
+  JOIN TaxonLineage l ON l.taxon_id = d.taxon_id WHERE l.lineage_id IS NOT NULL;
+SELECT count(*) FROM BlastDatabase b LEFT JOIN reach r ON r.bd = b.id
+WHERE r.bd IS NULL;        -- 0
+```
+
+Reloading a fresher taxdump is still the fix, and it costs the hour-plus that
+keeping `db.sqlite.taxnode-only.bak` exists to avoid. Decide per build — but
+weigh it as "19 genomes are findable only by their own taxid", not as "19
+unreachable databases".
+
+### What the finished ladder looked like (2026-09-12)
+
+All six passes exited 0 with **zero `FAILED.` markers** and zero
+`already exists, skipping` lines.
+
+| | tags | genomes | databases built |
+|---|---|---|---|
+| `by-clade-bacterial` | 1,117 | 270,225 | 1,117 × 3 |
+| `by-clade-viral` | 901 | 191,653 | 901 × 3 − 6 empty |
+
+The genome counts land exactly on the `--dump-sizes` prediction for bacteria
+(270,225) and five over it for viruses (191,648 predicted the day before —
+new genomes, not a selection error).
+
+Checks worth repeating on the next ladder build:
+
+- **Tags collide with nothing.** Ten pairings across `by-genus-bacterial`
+  (4,630), `by-genus-viral` (345), both clade dirs and `ref/`: zero.
+- **No genome is in both a genus and a clade database.** The union of every
+  `by-genus-bacterial/*.features.faa.glist` (806,640 genomes) against the union
+  of the clade ones (270,225) intersects in **0**; likewise viral (5,919,402 vs
+  191,653). This is guaranteed by construction — a clade database requires
+  `-genus:*` — but it is the cheapest possible check that the `--unset-field`
+  clauses actually reached Solr.
+- **Reconciliation.** 1,088,901 eligible bacterial − 806,640 genus − 270,225
+  clade = **12,036**, i.e. only the known insertion-date gap.
+- **`blastdbcmd -info` sequence count equals the `.taxids` line count** on every
+  database spot-checked, including the 13 multi-volume ones (`Lachnospiraceae`,
+  71,033,172 sequences / 21.2 Gres). A large database has a `.pal`/`.nal` alias
+  and per-volume `.00.psq` files rather than a bare `.psq` — `find_db_in_path`
+  checks `pal nal psq nsq`, so it resolves either shape, but a check written as
+  `ls *.psq | wc -l` will come up 13 short and look like a failure.
+- **`search_taxa` returns both partitions.** Family taxid 186803
+  (Lachnospiraceae) resolves to 115 genus databases **and**
+  `by-clade-bacterial/Lachnospiraceae.features.faa`; taxid 1165092 (*uncultured
+  Lachnospiraceae bacterium*), which exists only in the no-genus set, resolves to
+  the clade database and nothing else. That is the behaviour the whole stage
+  exists to produce — check it explicitly.
 
 ## Stage 3 — curated reference databases
 
@@ -317,6 +587,20 @@ sequences.
    accept the database. The default tolerance is exact equality, because that is
    what clean bacterial builds produce; viral passes `0.03`. Reading the JSON
    sidecar is orders of magnitude cheaper than `blastdbcmd -info`.
+
+   **The usual cause of a shortfall was a feature with no sequence.**
+   `data_callback` — the `--no-check-files` path, i.e. what the viral builds
+   take — wrote the `.taxids` line for every feature the query returned, but a
+   feature whose `aa_sequence_md5` is null yields an *empty* fasta record, which
+   makeblastdb drops without a warning. The database therefore came out short by
+   exactly the number of translation-less features. It is not a rare condition:
+   55 of the 433 PATRIC CDS in the no-family Nidovirales set have no
+   `aa_sequence_md5` (12.7%), and 929 of 6,804 in Mydovirus (13.7%) — both far
+   past the 3% viral tolerance. Fixed by skipping such a feature in **both**
+   files (the prefetch path had always had this guard); each skip is logged as
+   `No aa_sequence_md5 sequence for <fid>, skipping`. This is also the most
+   likely explanation of the 45 viral databases in the previous generation that
+   were short by ≤2.4%.
 
 2. **Features-database taxid coverage versus the same genus's contigs
    database.** Same genome list, so contigs clean plus features short means the

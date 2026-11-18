@@ -74,6 +74,18 @@ for my $tag (sort keys %by_tag)
 sub process_path
 {
     return unless /\.taxids/;
+    #
+    # A zero-length .taxids means the build produced no records for this
+    # database -- p3x-create-blast-db logs "Skipping creation of empty
+    # database" and writes no BLAST index. Cataloguing it would create a
+    # BlastDatabase row whose path resolves to nothing; search degrades
+    # gracefully (find_db_in_path warns) but the catalog would be wrong.
+    #
+    if (!-s $_)
+    {
+	warn "Skipping empty taxid map $File::Find::name\n";
+	return;
+    }
     return if $process_re && ! /$process_re/;
     my $taxids_file = $_;
     my $dir = $File::Find::name;
@@ -102,7 +114,13 @@ sub process_path
 	print "$dir " . dirname($dir) . " curated=$curated\n";
 	# return;
 	$dbh->begin_work();
+	#
+	# INSERT OR IGNORE is what makes this walk idempotent across a group's
+	# three databases, so it cannot carry the curated flag -- the second and
+	# third rows would skip it. Set the flag in a separate statement.
+	#
 	$dbh->do(qq(INSERT OR IGNORE INTO GenomeGroup (name) VALUES (?)), undef, $tag);
+	$dbh->do(qq(UPDATE GenomeGroup SET curated = ? WHERE name = ?), undef, $curated, $tag);
 	my $res = $dbh->selectcol_arrayref(qq(SELECT id FROM GenomeGroup WHERE name = ?), undef, $tag);
 	$sql_genome_group = $res->[0];
 	# $dbh->commit();
