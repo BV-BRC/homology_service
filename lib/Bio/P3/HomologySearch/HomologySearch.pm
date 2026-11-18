@@ -202,6 +202,38 @@ use File::Slurp;
     my $out;
     run(["blastp", "-version-full"], ">", \$out);
     print STDERR "BLAST version: $out\n";
+
+    #
+    # Taxonomic filtering needs taxonomy4blast.sqlite3, and BLAST looks for that
+    # file only along BLASTDB -- not beside the database it is searching.
+    # (Verified 2026-11-17: copies in the generation root and in the database's
+    # own directory both had no effect; only the environment variable did.)
+    #
+    # Without it every -taxids / -taxidlist is ignored. BLAST prints "The
+    # -taxids command line option requires additional data files" on stderr and
+    # then returns UNFILTERED results with exit status 0, so a filtered answer
+    # and an unfiltered one are indistinguishable to everything upstream. Asking
+    # one 24-taxon database for a single taxon returned all 17 that had hits.
+    #
+    # The search path is reused rather than configured separately: the taxonomy
+    # file is versioned with the generation, and this service already has a
+    # two-stanza deploy.cfg trap where updating one and not the other leaves
+    # half of it on the old data. A third key to keep in sync invites the same
+    # failure.
+    #
+    my @db_paths = @{ blast_db_search_path() };
+    $ENV{BLASTDB} = join(":", @db_paths, (defined($ENV{BLASTDB}) ? $ENV{BLASTDB} : ()));
+    if (grep { -f "$_/taxonomy4blast.sqlite3" } @db_paths)
+    {
+	print STDERR "Initializing BLASTDB to $ENV{BLASTDB}\n";
+    }
+    else
+    {
+	warn "WARNING: no taxonomy4blast.sqlite3 found under @db_paths - " .
+	    "-taxids/-taxidlist filtering will be SILENTLY IGNORED. " .
+	    "Build one from the taxonomy dump matching this generation; see " .
+	    "'The generation must contain taxonomy4blast.sqlite3' in REBUILDING.md.\n";
+    }
 }
 
 __PACKAGE__->mk_accessors(qw(app app_def params token task_id
