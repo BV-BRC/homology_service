@@ -58,6 +58,8 @@ my($opt, $usage) = describe_options("%c %o dbtype ftype blast-db-file",
 				    ['taxon-filter=s%' => "Define a taxon filter file", { default => {} }],
 				    ["blastdb-version=i", "Use this blastdb version", { default => 5 }],
 				    ['taxon=i@', "Limit to this taxon", { default => [] }],
+				    ['field=s%', "Require this genome field to have this exact value, as name=value. Repeatable. The name must be one of the taxonomic rank fields (see \%rank_field below)", { default => {} }],
+				    ['unset-field=s@', "Require this genome field to be unset. Repeatable, same allowed names as --field. Together the two select a clade at the deepest rank its genomes actually carry", { default => [] }],
 				    ["title=s", "Database title", { default => "blast db"}],
 				    ["parallel|j=i", "Use this many threads", { default => 1 }],
 				    ["batch-size=i", "Batch size for genome data lookups for data api", { default => 10 } ],
@@ -189,6 +191,46 @@ if (@{$opt->taxon})
     push(@params, fq => "taxon_lineage_ids:(" . join(" OR ",  @{$opt->taxon}) . ")");
 }
 
+#
+# Select on the genome record's own taxonomy fields rather than on the lineage.
+#
+# This is what builds a database for a clade at the deepest rank its genomes
+# actually carry: --field family=Lachnospiraceae --unset-field genus is "the
+# Lachnospiraceae that have no genus", which no combination of --taxon and
+# --exclude-taxon expresses without one exclusion clause per excluded genus.
+#
+# The names are allowlisted. Everything here is interpolated straight into a
+# Solr fq, so an open field name would make this a query injection surface --
+# and a typo would otherwise produce a silently empty database rather than an
+# error.
+#
+# The quotes around the value are load bearing: 270 of the 1,116 bacterial
+# clade names are two words ("Candidatus Pelagibacteraceae"), and unquoted the
+# second word is resolved against the default field.
+#
+my %rank_field = map { $_ => 1 }
+    qw(species genus family order class phylum kingdom superkingdom);
+
+for my $f (sort keys %{$opt->field})
+{
+    $rank_field{$f} or die "--field: '$f' is not one of the allowed fields (" .
+	join(" ", sort keys %rank_field) . ")\n";
+    my $v = $opt->field->{$f};
+    #
+    # Inside a quoted Solr term only the quote and the backslash are still
+    # special; a backslash would escape the closing quote and let the rest of
+    # the value out into the query.
+    #
+    $v =~ /["\\]/ and die "--field: value for '$f' may not contain a double quote or backslash\n";
+    push(@params, fq => qq($f:"$v"));
+}
+
+for my $f (@{$opt->unset_field})
+{
+    $rank_field{$f} or die "--unset-field: '$f' is not one of the allowed fields (" .
+	join(" ", sort keys %rank_field) . ")\n";
+    push(@params, fq => "-$f:*");
+}
 
 push(@params, fq => "genome_status:Complete") if $opt->complete;
 
