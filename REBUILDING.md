@@ -140,6 +140,64 @@ adds `--no-quality-check --no-check-files --batch-size 500` plus
 exists because makeblastdb deterministically rejects a few records in some
 viral sets; see "Verifying" below.
 
+### The SARS-CoV-2 carve-out
+
+`--viral` also implies **`--sars2-carveout`**, which passes
+`--refrep-only-taxon 2697049` down to `p3x-create-blast-db`. Inside taxon
+2697049 only reference and representative genomes are kept; everything else in
+the lineage is untouched. `--no-sars2-carveout` turns it off.
+
+This exists because Coronaviridae is not a normal family. Measured 2026-09:
+
+| | genomes |
+|---|---|
+| Coronaviridae, all | 9,487,138 |
+| of which SARS-CoV-2 | 9,413,387 (99.2%) |
+| SARS-CoV-2 Reference | 1 |
+| SARS-CoV-2 Representative | 21 |
+| **with the carve-out** | **73,773** (73,751 + 22) |
+
+Nine and a half million clinical-surveillance depositions of one virus are not
+a searchable database, they are a scheduling singularity. `--dump-sizes` on the
+live data makes the point better than the genome count does: without the
+carve-out Coronaviridae is **280,164 Mbp and rank 1**, seventy-nine times the
+next family (Orthomyxoviridae, 3,552). With it, **347 Mbp at rank 8** — an
+807-fold reduction that turns it back into an ordinary family. It is also
+*smaller than what production ships today*: `data.2022-0916` carries 400,322
+Coronaviridae genomes in 6.5 GB, against 0.3 GB here.
+
+Two notes on the mechanism:
+
+- The filter is written as a **negated compound clause**,
+  `-(taxon_lineage_ids:2697049 -reference_genome:(Reference OR Representative))`,
+  rather than the more obvious `A OR B`. A bare negative as the left arm of an
+  OR does not reliably match in Solr. Verified to be a no-op outside the named
+  taxon: Orthomyxoviridae returns 2,132,022 genomes with the clause and without.
+- Neither existing knob would do. `--exclude-taxon` is all-or-nothing and would
+  drop the reference genomes too; `--reference`/`--representative` build one
+  global clause applied to the entire query, which would strip every other
+  genus in the family.
+
+There is a long-dead `# push(@params, fq => "-taxon_id:2697049");` in the
+history of `compute_genome_lists`. Note that it sat in the **sizing/facet**
+query, so uncommenting it would have changed the scheduler's estimate and
+nothing about what got built.
+
+**A driver already running will not pick this up.** The child
+`p3x-create-blast-db` processes are fresh execs and read the current script,
+but the carve-out only reaches them if the *driver* puts
+`--refrep-only-taxon` on their command line — and the driver read its own code
+at startup. If you deploy the carve-out mid-pass, the families already
+scheduled by that driver still build without it. Rerunning one family by hand
+means calling the child directly:
+
+```bash
+p3x-create-blast-db --taxon 11118 --refrep-only-taxon 2697049 \
+    --no-quality-check --no-check-files --batch-size 500 \
+    --max-missing-fraction 0.03 --title Coronaviridae --parallel 2 \
+    aa features $NEW/by-genus-viral/Coronaviridae
+```
+
 ## Stage 3 — curated reference databases
 
 Six databases in `ref/`: `bacteria-archaea` and `viral-reference`, each in the
@@ -312,6 +370,37 @@ Note what detector 1 cannot do here: `.taxids` is written from the same
 enumeration as the database, so a count match proves the write was not truncated,
 **not** that the genome list was complete. Only step 3, an independent
 re-enumeration, tests that.
+
+### A family that dies on a lone 5xx
+
+A different signature, and the one that cost Coronaviridae two attempts in this
+generation:
+
+    Query failed: 502 error code: 502
+     at .../p3_core/lib/P3DataAPI.pm line NNN.
+        P3DataAPI::solr_query_raw_list(...)
+        P3DataAPI::solr_query_list(...)
+        main::... at .../p3x-create-blast-db.pl line 178
+
+This is the *enumeration* failing, not the build — it happens before any BLAST
+file is written, so the family leaves no artifacts at all and reruns clean with
+no `--overwrite`. Exposure scales with page count, which is why the largest
+families are the ones that get picked off: Coronaviridae at ~380 cursor pages
+needed only one transient 502 anywhere in the sequence.
+
+`P3DataAPI` had **no retry at all** on this path, while its RQL path retried
+fifteen times — the asymmetry was accidental, and everything paging through
+`solr_query_list`, this builder included, was in the half that survived nothing.
+Fixed in **p3_core PR #25**: both paths now delegate to
+`P3ClientUA::retry_request`, so a transient 5xx costs a jittered backoff instead
+of a family. Check with `grep -c _solr_post $KB_TOP/modules/p3_core/lib/P3DataAPI.pm`
+— three references means the fix is present.
+
+The environment knobs come with it: `P3_HTTP_RETRY_MAX_ELAPSED` (wall-clock
+budget, 300 s default) and `P3_HTTP_RETRY_DISABLE=1` to observe a fault rather
+than survive it. Note that a *policy* rejection is deliberately not retried —
+a Cloudflare 1010 is a decision the edge will repeat in a millisecond, so it
+still fails immediately. Set `P3_DEBUG_HTTP=1` to see the exchange.
 
 ## Publishing
 
