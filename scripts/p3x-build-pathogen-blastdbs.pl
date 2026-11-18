@@ -51,6 +51,12 @@ $ftype eq 'features' or $ftype eq 'contigs' or die "Invalid ftype $ftype (valid 
 make_path($opt->log_dir);
 
 $ENV{TMPDIR} = "/disks/tmp";
+#
+# Clear the previous run's failure markers, or a clean rerun still reports the
+# failures it just repaired.
+#
+unlink($_) for glob($opt->log_dir . "/FAILED.*");
+
 
 my $build_other = 0;
 
@@ -366,8 +372,38 @@ $sched->run(sub {}, sub {
 				      "2>", $opt->log_dir . "/log.$genus.err",)
 		  : ()),
 		);
-    $ok or die "Failure running @cmd: $! $?\n";
+    #
+    # Do not die here. LPTScheduler::run forks one child per bin and each child
+    # walks its bin sequentially, so a die abandons every item the bin has not
+    # reached yet -- and the parent never learns, because the scheduler
+    # discards the child exit status. The first viral clade run lost 182 of 901
+    # databases to two failures that had nothing to do with them.
+    #
+    # Record the failure as a marker file instead and keep going; the parent
+    # counts the markers after the run and exits nonzero, so a rerun (the skip
+    # guard makes it cheap) repairs exactly what failed.
+    #
+    if (!$ok)
+    {
+	my $err = "Failure running @cmd: $! $?";
+	warn "$err\n";
+	if (open(my $fh, ">", $opt->log_dir . "/FAILED.$genus"))
+	{
+	    print $fh "$err\n";
+	    close($fh);
+	}
+    }
 });
+
+my @failed = sort map { s/.*\/FAILED\.//r } glob($opt->log_dir . "/FAILED.*");
+if (@failed)
+{
+    print STDERR "\n" . scalar(@failed) . " database(s) failed to build:\n";
+    print STDERR "    $_\n" for @failed;
+    print STDERR "Rerun the same command to repair them; databases that " .
+	"succeeded are skipped.\n";
+    exit 1;
+}
 
 sub compute_genome_lists
 {

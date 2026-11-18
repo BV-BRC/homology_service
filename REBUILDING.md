@@ -136,6 +136,21 @@ Every genus produces a non-empty `.err` in normal operation — it carries
 "Skipping duplicate id" and "Bad sequence" warnings — so a non-empty `.err` is
 not a failure signal by itself.
 
+**A failed database is `$LOGDIR/FAILED.<tag>`, and the driver exits 1.** That is
+the only summary you get: `LPTScheduler::run` forks one child per bin and
+discards the child exit status, so a `die` in the build callback used to abandon
+every item that bin had not reached yet, silently — the first viral clade run
+lost **182 of 901** databases to two unrelated failures. The callback now warns,
+drops a marker, and carries on. Stale markers are cleared at startup, so after a
+run:
+
+```bash
+ls $NEW/logs/<stage>/FAILED.* 2>/dev/null | sed 's|.*/FAILED\.||'
+```
+
+is the exact repair list, and rerunning the same command rebuilds only those
+(everything that succeeded has a `.taxids` and is skipped).
+
 ## Stage 2 — viral, by family
 
 ```bash
