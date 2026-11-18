@@ -65,6 +65,21 @@ relies on is version-specific; the tree pins BLAST+ 2.13.
     export NEW=/blast-build/blast-$(date +%Y-%m%d)
     mkdir -p $NEW/{by-genus-bacterial,by-genus-viral,ref,logs}
 
+    # Required for taxonomic filtering — see "Publishing".
+    # Pin the dump to the month the generation is built; do NOT pull the current
+    # taxdb.tar.gz (see below for why).
+    DUMP=2026-09-01
+    curl -s -O https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump_archive/taxdmp_$DUMP.zip
+    unzip -q -o taxdmp_$DUMP.zip nodes.dmp
+    awk -F'\t\\|\t' '{print $1"|"$2}' nodes.dmp > nodes.csv
+    sqlite3 $NEW/taxonomy4blast.sqlite3 <<SQL
+    CREATE TABLE TaxidInfo (taxid INTEGER PRIMARY KEY, parent INTEGER);
+    .mode list
+    .separator |
+    .import nodes.csv TaxidInfo
+    CREATE INDEX TaxidInfoCompositeIdx_parent ON TaxidInfo(parent,taxid);
+SQL
+
 **This is a correctness requirement, not tidiness.** `p3x-create-blast-db` skips
 any database that already looks built:
 
@@ -411,6 +426,109 @@ then update **both** stanzas in `deploy.cfg` — there are two,
 service on the old generation.
 
 Keep the previous generation until the new one has served real queries.
+
+### The generation must contain `taxonomy4blast.sqlite3`
+
+**Without it every `-taxids` / `-taxidlist` filter is silently ignored**, and
+the search returns hits from every taxon in the databases that were selected
+rather than the ones the user asked for. BLAST prints
+
+```
+The -taxids command line option requires additional data files.
+```
+
+on stderr and then **returns unfiltered results with exit status 0** — so
+nothing upstream can tell the difference between a filtered answer and an
+unfiltered one.
+
+Measured 2026-11-17 on `Acholeplasmataceae.features.faa` (24 taxa), asking for
+one: without the file **17** distinct `staxid`s came back, with it exactly
+**1**. `-taxidlist` behaves the same way — asking for 3 returned all 17
+unfiltered, and exactly those 3 once the file was reachable.
+
+Three details that cost time to establish:
+
+- **Only `taxonomy4blast.sqlite3` (99 MB) is required.** `taxdb.btd` and
+  `taxdb.bti` (196 MB together) carry scientific names for output formatting
+  and are not needed for filtering.
+- **The file must be reachable through `BLASTDB`.** Copying it into the
+  generation root *or* into the database's own directory does **not** work on
+  its own — verified separately, both still returned 17. Only the environment
+  variable takes effect. Setting `BLASTDB` to the generation root *does* work,
+  including for databases one level down in `by-*/`.
+- **Build it from a *dated* dump, not from the current `taxdb.tar.gz`.** NCBI
+  keeps only the latest `taxdb.tar.gz` (the `blast/db/` listing has exactly
+  `taxdb.tar.gz`, its `.md5` and `taxdb-metadata.json` — no archive), but it
+  does archive dated taxonomy dumps at `pub/taxonomy/taxdump_archive/`, and
+  `taxonomy4blast.sqlite3` is a trivial derivative of `nodes.dmp`: one table
+  `TaxidInfo(taxid INTEGER PRIMARY KEY, parent INTEGER)` plus an index on
+  `(parent,taxid)`. Stage 0 builds it.
+
+  **A newer file is strictly worse, never better.** Taxids are retired and
+  merged over time, so a current dump covers *fewer* of the taxids a given
+  generation carries. Measured 2026-11-18:
+
+  | generation | dump | of its taxids, missing |
+  |---|---|---|
+  | `blast-2026-0826` (309,287 taxids) | `taxdmp_2026-09-01` | **185** |
+  | | current (Nov 2026) | 223 |
+  | `data.2022-0916` (242,423 taxids) | `taxdmp_2022-09-01` | **51** |
+  | | `taxdmp_2022-10-01` | 68 |
+  | | current (Nov 2026) | 1,050 |
+
+  Pick the archived dump nearest the month the generation was built.
+
+  **None of this is a correctness requirement**, which is worth knowing before
+  anyone blocks a release on it: a taxid absent from the file still filters
+  correctly. Verified with `-taxids 1172566` (absent from the Nov file, 3,723
+  sequences in `Natrinema.features.faa`) — 11 hits, all correctly 1172566.
+  BLAST matches the taxid literally against the database's own map, and the
+  service never asks BLAST to expand a parent: `find_databases_for_taxa` does
+  that in SQL against `TaxonLineage` and hands BLAST an explicit leaf list.
+  The file only has to be *present* for the mechanism to engage.
+
+**`BLASTDB` is set in code, so there is nothing to configure.**
+`HomologySearch.pm` sets `$ENV{BLASTDB}` from `blast_db_search_path` at module
+load, next to the block that already fixes up `PATH` for the BLAST binaries. It
+has to happen in-process rather than in a start script because `App-Homology.pl`
+is an `AppScript` — the search runs on whatever node the scheduler picks, and a
+shell variable set on the service host would not follow it there. The same block
+warns loudly when the file is absent, which is the only signal you get for a
+failure BLAST reports as success.
+
+`t/client-tests/taxid-filtering.t` is the regression test. It asserts on the
+`staxid`s that come back, not on the exit status — a test that checks `rc=0`
+passes in the broken state, which is how this went unnoticed. Run it against a
+generation that is not the configured one with
+`HOMOLOGY_TEST_GENERATION=$NEW perl -I lib t/client-tests/taxid-filtering.t`.
+(Note `make test` invokes `$(DEPLOY_RUNTIME)/bin/perl`, i.e. `/kb/runtime`,
+which exists only in a deployment — run the file directly in a dev tree.)
+
+**This is pre-existing and generation-wide.** `data.2022-0916` in production has
+no `taxonomy4blast.sqlite3` either, so the live service's taxon filtering is
+inert today — this is the cause of user reports that a `taxon_list` search
+returned genomes outside the selected taxon. Patching production means two
+independent things, and the first alone does nothing:
+
+1. Drop a `taxonomy4blast.sqlite3` built from `taxdmp_2022-09-01` into
+   `/vol/blastdb/bvbrc-service/data.2022-0916/`. Verified 2026-11-18 as the
+   single required location: the deployed `Config.pm` inside
+   `ubuntu-222-build12-2.sif` has
+   `blast_db_search_path => ['/vol/blastdb/bvbrc-service/data.2022-0916']`, so
+   that directory is exactly what this code puts on `BLASTDB`.
+2. Ship this change. The code is baked into the compute image, so it needs a
+   new image build and rollout — there is no bind-mounted deployment to patch.
+
+Note for a generation change: `auto-deploy` derives the make variables from the
+cfg block named after the **module directory**, so `[homology_service]` is the
+stanza that reaches `Config.pm`; `[HomologyService]` does not. Keep both in step
+anyway — the service reads its own config at runtime.
+
+Impact is bounded by how taxonomically coarse each database is. The genus
+databases are the *worse* case, not the clade ones: `Escherichia.features.faa`
+holds 2,560 taxa, against a median of 3 for genus databases and 2 for clade
+databases (max 4,896 vs 370). A single-species query against *Escherichia*
+therefore gets the whole genus back.
 
 ## When the disk fills
 
