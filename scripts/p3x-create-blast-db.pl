@@ -579,12 +579,28 @@ sub data_callback
     for my $ent (@$data) {
 
 	my $id = "gnl|$ent->{patric_id}";
-	print_alignment_as_fasta($fh,
-				 [
-				  $id, $ent->{product},
-				  $by_md5{$ent->{$key}}
-				  ]
-				);
+	my $seq = $by_md5{$ent->{$key}};
+
+	#
+	# A feature with no sequence has to be skipped in *both* files or the
+	# database can never match its taxid map. Writing the fasta record
+	# anyway produces an empty entry that makeblastdb silently drops, while
+	# the taxid line still goes in -- so the database comes out short and
+	# verify_record_count fails it.
+	#
+	# It is not rare: 55 of the 433 PATRIC CDS in the no-family Nidovirales
+	# set carry no aa_sequence_md5 at all (12.7%), which is what pushed that
+	# clade past even the 3% viral tolerance. The prefetch path below has
+	# always had this guard; only this one, the --no-check-files path the
+	# viral builds take, was missing it.
+	#
+	if (!defined($seq) || $seq eq '')
+	{
+	    warn "No $key sequence for $ent->{patric_id}, skipping\n";
+	    next;
+	}
+
+	print_alignment_as_fasta($fh, [ $id, $ent->{product}, $seq ]);
 	print $tax "$id\t$ent->{taxon_id}\n" or die "Cannot write to tax file: $!";
 	push(@{$id_map->{$id}}, [$id, $ent->{taxon_id}]);
     }

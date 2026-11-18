@@ -333,6 +333,20 @@ sequences.
    what clean bacterial builds produce; viral passes `0.03`. Reading the JSON
    sidecar is orders of magnitude cheaper than `blastdbcmd -info`.
 
+   **The usual cause of a shortfall was a feature with no sequence.**
+   `data_callback` — the `--no-check-files` path, i.e. what the viral builds
+   take — wrote the `.taxids` line for every feature the query returned, but a
+   feature whose `aa_sequence_md5` is null yields an *empty* fasta record, which
+   makeblastdb drops without a warning. The database therefore came out short by
+   exactly the number of translation-less features. It is not a rare condition:
+   55 of the 433 PATRIC CDS in the no-family Nidovirales set have no
+   `aa_sequence_md5` (12.7%), and 929 of 6,804 in Mydovirus (13.7%) — both far
+   past the 3% viral tolerance. Fixed by skipping such a feature in **both**
+   files (the prefetch path had always had this guard); each skip is logged as
+   `No aa_sequence_md5 sequence for <fid>, skipping`. This is also the most
+   likely explanation of the 45 viral databases in the previous generation that
+   were short by ≤2.4%.
+
 2. **Features-database taxid coverage versus the same genus's contigs
    database.** Same genome list, so contigs clean plus features short means the
    intermediate fasta was truncated before makeblastdb ran. This is the detector
