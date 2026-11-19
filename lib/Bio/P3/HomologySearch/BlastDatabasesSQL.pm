@@ -117,7 +117,11 @@ sub search_taxa
 		 JOIN GenomeGroup g on g.id = b.genome_group
 		 WHERE $where);
 
-    print STDERR Dumper($qry, \@params);
+    #
+    # This dumped the SQL and bind values into every job's stderr, so a real
+    # error arrived behind a wall of $VAR1. Keep it available for debugging.
+    #
+    print STDERR Dumper($qry, \@params) if $ENV{HOMOLOGY_DEBUG_SQL};
     my $res = $self->dbh->selectall_arrayref($qry, undef, @params);
 
     my %dbs;
@@ -153,17 +157,21 @@ sub find_databases_for_taxa
 
     my($to_search, $missing) = $self->search_taxa($dbtype, $taxa);
 
-    if (@$to_search == 0)
+    #
+    # Report unresolved taxa unconditionally. This used to be an elsif on the
+    # "nothing matched" return above, so the one message naming the bad taxa
+    # was suppressed in exactly the case where it was the only clue -- the
+    # caller then died with "No taxa were found to search", which names
+    # neither the taxon nor the generation.
+    #
+    if (@$missing > 0)
     {
-	return undef;
-    }
-    elsif (@$missing > 0)
-    {
-	warn "Could not find databases for taxa @$missing\n";
+	warn "No database in @{$self->{search_path}} covers taxa: @$missing\n";
     }
 
     my %taxa;
     my @files;
+    my @unresolved_paths;
     for my $to (@$to_search)
     {
 	my($path, $taxa) = @$to;
@@ -175,11 +183,36 @@ sub find_databases_for_taxa
 	}
 	else
 	{
-	    warn "Could not find database $path\n";
+	    push(@unresolved_paths, $path);
+	    warn "Catalog names database $path but no file for it exists in @{$self->{search_path}}\n";
 	}
     }
 
-    return([keys %taxa], \@files);
+    #
+    # The diagnostic hash is a third return value, so the existing two-element
+    # callers are unaffected.
+    #
+    my $diag = {
+	requested	=> [@$taxa],
+	missing		=> $missing,
+	dbtype		=> $dbtype,
+	search_path	=> $self->{search_path},
+	db_file		=> $self->{db_file},
+	unresolved_paths => \@unresolved_paths,
+    };
+
+    #
+    # Return undef rather than an empty arrayref when nothing is searchable.
+    # An empty arrayref is *true*, so a caller guarding on `!$taxa` would sail
+    # past it and run blast with an empty -taxids -- which is how a catalog
+    # pointing at absent files used to degrade.
+    #
+    if (!%taxa)
+    {
+	return (undef, undef, $diag);
+    }
+
+    return([keys %taxa], \@files, $diag);
 }
 
 =item B<expand_taxa>
