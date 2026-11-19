@@ -829,7 +829,60 @@ We find the database or databases to use by scanning the tax_counts fields in th
 database of the correct type for the presence of the desired taxa. 
 
 =cut
-    
+
+=item B<taxon_list_failure_message>
+
+Build the error for a taxon_list search that resolved to no databases.
+
+Put the evidence in the message. A job's stderr is the only artifact that
+survives, and four different conditions reach here: a taxon that is simply
+absent from the catalog, one present but covered only by curated databases,
+a catalog whose files are missing, and a genuinely empty request. The old
+text, "No taxa were found to search", distinguished none of them and named
+neither the taxon nor the generation.
+
+The common cause is staleness rather than a bad request: a taxon added to
+NCBI after the generation was built cannot be in its catalog, and the
+generation in service can be years old.
+
+=cut
+
+sub taxon_list_failure_message
+{
+    my($db_list, $dbtype, $diag) = @_;
+
+    my @req = @{$db_list || []};
+    my $msg = "No searchable $dbtype database for taxon_list (" .
+	(@req ? join(",", @req) : "empty request") . ").\n";
+
+    if (ref($diag) eq 'HASH')
+    {
+	my @missing = @{$diag->{missing} || []};
+	if (@missing)
+	{
+	    my %m = map { $_ => 1 } @missing;
+	    my @found = grep { !$m{$_} } @req;
+	    $msg .= "  Not present in the catalog: " . join(",", @missing) . "\n";
+	    $msg .= "  Present but contributed no database: " . join(",", @found) . "\n"
+		if @found;
+	}
+
+	if (my @up = @{$diag->{unresolved_paths} || []})
+	{
+	    $msg .= "  Catalog named " . scalar(@up) .
+		" database(s) whose files are absent: @up\n";
+	}
+
+	$msg .= "  Generation: @{$diag->{search_path} || []}\n";
+	$msg .= "  Catalog:    $diag->{db_file}\n" if $diag->{db_file};
+    }
+
+    $msg .= "  A taxon added to the taxonomy after this generation was built " .
+	"will not be in its catalog.\n";
+
+    return $msg;
+}
+
 sub stage_database_taxon_list
 {
     my($self, $params, $stage_dir, $blast_params) = @_;
@@ -842,11 +895,11 @@ sub stage_database_taxon_list
 	die "stage_database_taxon_list: invalid or missing db_taxon_list";
     }
 
-    my($taxa, $file_list) = $self->blastdbs->find_databases_for_taxa($dbtype, $db_list);
+    my($taxa, $file_list, $diag) = $self->blastdbs->find_databases_for_taxa($dbtype, $db_list);
 
-    if (!$taxa)
+    if (!$taxa || !@$taxa)
     {
-	die "No taxa were found to search";
+	die taxon_list_failure_message($db_list, $dbtype, $diag);
     }
 
     if (@$taxa > 10)
@@ -1288,7 +1341,20 @@ sub compute_db_preflight
     }
     elsif ($db_src eq 'taxon_list')
     {
-	my($taxa, $file_list) = $self->blastdbs->find_databases_for_taxa($db_type, $params->{db_taxon_list});
+	my($taxa, $file_list, $diag) = $self->blastdbs->find_databases_for_taxa($db_type, $params->{db_taxon_list});
+
+	#
+	# Fail here rather than at run time. Dereferencing an undef arrayref in
+	# rvalue context yields an empty list rather than dying, so this used to
+	# compute storage => 0, let the job be scheduled with its full runtime
+	# allocation, and only then die in stage_database_taxon_list. The
+	# condition is known at submit; report it at submit.
+	#
+	if (!$taxa || !@$taxa)
+	{
+	    die taxon_list_failure_message($params->{db_taxon_list}, $db_type, $diag);
+	}
+
 	for my $f (@$file_list)
 	{
 	    for my $bf (glob("$f*[pn]sq"))
