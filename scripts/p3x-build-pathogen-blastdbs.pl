@@ -21,6 +21,7 @@ my($opt, $usage) = describe_options("%c %o dbtype ftype output-dir",
 				    ["representative", "Include representative genomes"],
 				    ["complete", "Include only genome_status=Complete genomes"],
 				    ["quality-check!", "Require quality of Good (invert with --no-quality-check)", { default => 1 }],
+				    ["exclude-deprecated!", "Exclude genome_status=Deprecated genomes (invert with --no-exclude-deprecated)", { default => 1 }],
 				    ["n-build-threads=i", "Number of parallel builds to run", { default => 6 }],
 				    ["n-db-threads=i", "Number of database lookup threads to run inside each build", { default => 2}],
 				    ["viral", "Build for viral families"],
@@ -267,6 +268,13 @@ else
 #
 push(@create_options, "--overwrite") if $opt->overwrite;
 
+#
+# Both sides default to excluding Deprecated, so the common case needs no
+# passthrough. Disabling it on the driver alone would leave base_query_params
+# sizing a smaller set than the child builds -- propagate it explicitly.
+#
+push(@create_options, "--no-exclude-deprecated") unless $opt->exclude_deprecated;
+
 push(@create_options, map { ("--refrep-only-taxon", $_) } @refrep_only);
 
 push(@create_options, @taxon_opts);
@@ -509,7 +517,13 @@ sub base_query_params
     }
     
     push(@params, fq => "genome_status:Complete") if $opt->complete;
-    
+
+    #
+    # Must match p3x-create-blast-db's own selection, or the sizing schedules
+    # work that will not be built. See the passthrough below.
+    #
+    push(@params, fq => '-genome_status:Deprecated') if $opt->exclude_deprecated;
+
     push(@params, fl => "genome_id,genome_name,taxon_id,genome_length,genus,family");
 
     
