@@ -1298,6 +1298,74 @@ sub compute_input_preflight
 }
 
 
+=item B<sum_blast_db_sizes>
+
+    $bytes = sum_blast_db_sizes($file_list)
+
+Total on-disk size of the sequence files (.psq/.nsq, including the numbered
+volumes of a multi-volume database) for a list of database path prefixes.
+
+Read each directory once rather than once per database. This was
+C<glob("$f*[pn]sq")> per database, and glob lists the whole directory on
+every call: C<by-genus-bacterial> holds 156,399 files, so a request
+resolving to 3,799 databases scanned it 3,799 times. Measured on the
+production generation, that is ~20 ms per call with the directory cached
+and ~330-650 ms without -- about 75 s warm for a Bacteria-wide request,
+minutes cold. The cost scaled with the number of databases selected, so
+the broadest searches, already the slowest to run, paid the largest
+preflight tax.
+
+=cut
+
+sub sum_blast_db_sizes
+{
+    my($file_list) = @_;
+
+    #
+    # Group the prefixes by directory.
+    #
+    my %want;
+    for my $f (@{$file_list || []})
+    {
+	next unless defined($f) && length($f);
+	my($dir, $base) = $f =~ m{^(.*)/([^/]+)$} ? ($1, $2) : (".", $f);
+	$want{$dir}->{$base} = 1;
+    }
+
+    my $sz = 0;
+    for my $dir (sort keys %want)
+    {
+	my $prefixes = $want{$dir};
+
+	my $dh;
+	if (!opendir($dh, $dir))
+	{
+	    warn "Cannot read database directory $dir: $!\n";
+	    next;
+	}
+
+	while (defined(my $ent = readdir($dh)))
+	{
+	    #
+	    # Recover the database prefix from the file name. A database is
+	    # either <prefix>.psq or, when multi-volume, <prefix>.<nn>.psq --
+	    # so test both readings rather than assuming, in case a prefix
+	    # legitimately ends in a dotted number.
+	    #
+	    next unless my($base) = $ent =~ /^(.*)\.[pn]sq$/;
+	    my $vol = $base;
+	    $vol =~ s/\.\d+$//;
+
+	    next unless $prefixes->{$base} || $prefixes->{$vol};
+
+	    $sz += -s "$dir/$ent";
+	}
+	closedir($dh);
+    }
+
+    return $sz;
+}
+
 sub compute_db_preflight
 {
     my($self, $app, $params) = @_;
@@ -1355,22 +1423,12 @@ sub compute_db_preflight
 	    die taxon_list_failure_message($params->{db_taxon_list}, $db_type, $diag);
 	}
 
-	for my $f (@$file_list)
-	{
-	    for my $bf (glob("$f*[pn]sq"))
-	    {
-		$sz += -s $bf;
-	    }
-	}
+	$sz += sum_blast_db_sizes($file_list);
     }
     elsif ($db_src eq 'precomputed_database')
     {
 	my $f = $self->blastdbs->find_precomputed_database($params->{db_precomputed_database}, $db_type);
-	for my $bf (glob("$f*[pn]sq"))
-	{
-	    my $fsize = -s $bf;
-	    $sz += $fsize;
-	}
+	$sz += sum_blast_db_sizes([$f]);
     }
     else
     {
